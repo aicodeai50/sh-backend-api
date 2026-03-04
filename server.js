@@ -1,86 +1,98 @@
 /**
  * SH BACKEND API — FINAL STABLE VERSION
  * Platform: Railway
- *
- * Public endpoint (frontend / testing):
- *  POST /api/public/chat
- *
- * AI endpoints:
- *  POST /ai/quiz
- *  POST /ai/flashcards
- *  POST /ai/code-explainer
- *  POST /ai/research-finder
- *  POST /ai/interview-simulator
- *
- * Debug:
- *  GET  /health
- *  GET  /debug/whoami
- *  GET  /debug/routes
- *  GET  /debug/openai-key-check
- *  GET  /debug/openai-key-chars
- *  GET  /debug/sh-api-key-check
- *  GET  /debug/env-path
  */
 
 const express = require("express");
 const cors = require("cors");
+const cookieParser = require("cookie-parser");
 const OpenAI = require("openai");
 const dotenv = require("dotenv");
 const path = require("path");
 const fs = require("fs");
 
-// 🔐 Force-load .env from same directory as server.js
+// ✅ connect Sequelize + sync models
+const { connectDatabase } = require("./database");
+
+// ===============================
+// ENV
+// ===============================
 dotenv.config({
   path: path.resolve(__dirname, ".env"),
 });
 
-// ✅ mount AI router
+// ===============================
+// IMPORT ROUTES
+// ===============================
 const aiRoutes = require("./routes/ai/ai.routes");
+const buildVmRouter = require("./routes/vm/vm.routes");
+const authRoutes = require("./routes/auth.routes");
+const { requireUser } = require("./middleware/requireUser");
 
+// ✅ Company routes
+const companyRoutes = require("./routes/company/company.routes");
+
+// ===============================
+// APP
+// ===============================
 const app = express();
-
-// ✅ helps rate-limit IP + headers when behind Railway proxy
 app.set("trust proxy", 1);
 
 // ===============================
 // CONFIG
 // ===============================
 const PORT = process.env.PORT || 8080;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
 
-// ✅ TRIM to avoid newline/space mismatch from Railway variables
+// Comma-separated list:
+// FRONTEND_ORIGIN=https://shynvo-web.vercel.app,https://shynvo.app,http://localhost:3000
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
+
 const SH_API_KEY = (process.env.SH_API_KEY || "").trim();
+const JWT_SECRET = (process.env.JWT_SECRET || "").trim();
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
 
-// Build identifier
-const BUILD_TAG =
-  process.env.RAILWAY_GIT_COMMIT_SHA || `local-${Date.now()}`;
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+const BUILD_TAG = process.env.RAILWAY_GIT_COMMIT_SHA || `local-${Date.now()}`;
 
 // ===============================
-// BODY PARSER
+// HARD FAILS (IMPORTANT)
+// ===============================
+if (!SH_API_KEY) console.error("❌ SH_API_KEY missing");
+if (!JWT_SECRET) console.error("❌ JWT_SECRET missing");
+if (!OPENAI_API_KEY) console.error("⚠️ OPENAI_API_KEY missing (AI/VM will fail)");
+
+// ===============================
+// MIDDLEWARE
 // ===============================
 app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
+
+// CORS must allow cookies (credentials: true)
+const allowedOrigins = FRONTEND_ORIGIN.split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin: (origin, cb) => {
+    // allow curl/postman (no origin)
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error(`CORS blocked: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "x-sh-api-key", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 // ===============================
-// CORS
-// ===============================
-app.use(
-  cors({
-    origin: FRONTEND_ORIGIN === "*" ? true : FRONTEND_ORIGIN,
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "x-sh-api-key"],
-  })
-);
-
-// ✅ IMPORTANT: respond to browser preflight
-app.options("*", cors());
-
-// ===============================
-// SH API KEY MIDDLEWARE
+// SH API KEY GUARD
 // ===============================
 function requireShApiKey(req, res, next) {
-  // ✅ TRIM header too
   const key = String(req.headers["x-sh-api-key"] || "").trim();
 
   if (!SH_API_KEY) {
@@ -101,7 +113,7 @@ function requireShApiKey(req, res, next) {
 }
 
 // ===============================
-// SIMPLE RATE LIMIT
+// RATE LIMIT (SIMPLE)
 // ===============================
 const WINDOW_MS = 60_000;
 const MAX_REQ = 25;
@@ -121,12 +133,12 @@ function rateLimit(req, res, next) {
     entry.start = now;
   }
 
-  entry.count += 1;
+  entry.count++;
   hits.set(ip, entry);
 
   if (entry.count > MAX_REQ) {
     return res.status(429).json({
-      error: "Too many requests. Try again in a minute.",
+      error: "Too many requests",
       build: BUILD_TAG,
     });
   }
@@ -137,38 +149,31 @@ function rateLimit(req, res, next) {
 // ===============================
 // OPENAI CLIENT
 // ===============================
-if (!OPENAI_API_KEY) {
-  console.error("❌ OPENAI_API_KEY missing in environment");
-}
-
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+app.set("openai", openai);
+app.set("openai_model", OPENAI_MODEL);
 
 // ===============================
-// HEALTH & DEBUG
+// HEALTH + DEBUG
 // ===============================
-app.get("/", (req, res) => res.send("OK"));
+app.get("/", (_, res) => res.send("OK"));
+app.get("/health", (_, res) => res.json({ ok: true, build: BUILD_TAG }));
 
-app.get("/health", (req, res) => {
-  res.json({ ok: true, build: BUILD_TAG });
+app.get("/debug/routes", (_, res) => {
+  const routes = [];
+  const stack = app._router?.stack || [];
+  for (const m of stack) {
+    if (m.route) {
+      routes.push({
+        path: m.route.path,
+        methods: Object.keys(m.route.methods).map((x) => x.toUpperCase()),
+      });
+    }
+  }
+  res.json({ ok: true, routes, build: BUILD_TAG });
 });
 
-app.get("/debug/whoami", (req, res) => {
-  res.json({
-    running: "server.js",
-    build: BUILD_TAG,
-    port: PORT,
-    hasOpenAIKey: Boolean(OPENAI_API_KEY),
-    hasShApiKey: Boolean(SH_API_KEY),
-    model: OPENAI_MODEL,
-    ip:
-      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-      req.socket.remoteAddress ||
-      "unknown",
-  });
-});
-
-// ✅ SH key diagnostics (safe — does not reveal secret)
-app.get("/debug/sh-api-key-check", (req, res) => {
+app.get("/debug/sh-api-key-check", (_, res) => {
   const k = process.env.SH_API_KEY || "";
   res.json({
     exists: Boolean(k),
@@ -180,118 +185,70 @@ app.get("/debug/sh-api-key-check", (req, res) => {
   });
 });
 
-// ✅ Show where server is looking for .env (safe)
-app.get("/debug/env-path", (req, res) => {
-  const envPath = path.resolve(__dirname, ".env");
-  res.json({
-    cwd: process.cwd(),
-    __dirname,
-    envPath,
-    envExists: fs.existsSync(envPath),
-    shExists: Boolean(process.env.SH_API_KEY),
-    build: BUILD_TAG,
-  });
-});
-
-app.get("/debug/routes", (req, res) => {
-  const routes = [];
-  const stack = app._router?.stack || [];
-
-  for (const m of stack) {
-    if (m.route && m.route.path) {
-      const methods = Object.keys(m.route.methods).map((x) => x.toUpperCase());
-      routes.push({ path: m.route.path, methods });
-    }
-  }
-
-  res.json({ routes, build: BUILD_TAG });
-});
-
-// ✅ SAFE KEY CHECK (does NOT expose your secret)
-app.get("/debug/openai-key-check", (req, res) => {
+app.get("/debug/openai-key-check", (_, res) => {
   const k = (process.env.OPENAI_API_KEY || "").trim();
   res.json({
     exists: Boolean(k),
-    startsWithBearer: k.toLowerCase().startsWith("bearer "),
     startsWithSk: k.startsWith("sk-") || k.startsWith("sk-proj-"),
     length: k.length,
     build: BUILD_TAG,
   });
 });
 
-// ✅ Detect illegal characters (newlines/spaces) without revealing key
-app.get("/debug/openai-key-chars", (req, res) => {
-  const k = process.env.OPENAI_API_KEY || "";
+app.get("/debug/jwt-check", (_, res) =>
   res.json({
-    length: k.length,
-    hasNewline: k.includes("\n") || k.includes("\r"),
-    hasSpaceEnds: k !== k.trim(),
-    startsWithSk: k.trim().startsWith("sk-") || k.trim().startsWith("sk-proj-"),
+    hasJwtSecret: Boolean(JWT_SECRET),
+    jwtLength: JWT_SECRET.length,
+    expiresIn: JWT_EXPIRES_IN,
     build: BUILD_TAG,
-  });
-});
+  })
+);
 
 // ===============================
-// ✅ AI ROUTES (PROTECTED)
+// ROUTES
 // ===============================
+
+// ✅ Make /auth consistent: protected by SH key too
+app.use("/auth", requireShApiKey, rateLimit, authRoutes);
+
 app.use("/ai", requireShApiKey, rateLimit, aiRoutes);
 
-// ===============================
-// PUBLIC CHAT (FRONTEND / TESTING)
-// ===============================
+const vmRoutes = buildVmRouter({ openai, model: OPENAI_MODEL });
+app.use("/vm", requireShApiKey, rateLimit, requireUser(), vmRoutes);
+
+app.use("/company", requireShApiKey, rateLimit, requireUser(), companyRoutes);
+
+// Public chat (used by frontend guide)
 app.post("/api/public/chat", requireShApiKey, rateLimit, async (req, res) => {
   try {
-    // Ping mode (debug)
-    if (req.query.ping === "1") {
-      return res.json({ reply: "pong", build: BUILD_TAG });
-    }
-
     if (!openai) {
       return res.status(500).json({
-        error: "OPENAI_API_KEY missing in environment",
+        error: "OPENAI_API_KEY missing",
         build: BUILD_TAG,
       });
     }
 
-    const { message, messages } = req.body || {};
-
-    const userMessages = Array.isArray(messages)
-      ? messages
-      : message
-      ? [{ role: "user", content: String(message) }]
-      : [];
-
-    if (!userMessages.length) {
-      return res.status(400).json({
-        error: "Provide 'message' or 'messages'",
-        build: BUILD_TAG,
-      });
-    }
-
-    const SYSTEM_PROMPT =
-      "You are SH Assistant AI. Be friendly, calm, and practical. Explain step-by-step.";
-
+    const messages = req.body?.messages || [];
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...userMessages],
+      messages,
     });
 
-    const reply = completion?.choices?.[0]?.message?.content || "No reply.";
-    return res.json({ reply, build: BUILD_TAG });
+    res.json({
+      reply: completion.choices?.[0]?.message?.content || "",
+      build: BUILD_TAG,
+    });
   } catch (err) {
-    console.error("Public chat error:", err);
-    return res.status(500).json({
+    res.status(500).json({
       error: "Chat error",
       details: err?.message || String(err),
-      cause: err?.cause ? String(err.cause) : null,
-      name: err?.name || null,
       build: BUILD_TAG,
     });
   }
 });
 
 // ===============================
-// 404 (LAST)
+// 404
 // ===============================
 app.use((req, res) =>
   res.status(404).json({
@@ -302,7 +259,7 @@ app.use((req, res) =>
 );
 
 // ===============================
-// SAFETY
+// SAFETY (log crashes)
 // ===============================
 process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e));
 process.on("uncaughtException", (e) => console.error("uncaughtException:", e));
@@ -310,6 +267,11 @@ process.on("uncaughtException", (e) => console.error("uncaughtException:", e));
 // ===============================
 // START
 // ===============================
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ server running on port ${PORT} | build ${BUILD_TAG}`);
-});
+(async () => {
+  await connectDatabase();
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`✅ server running on ${PORT} | ${BUILD_TAG}`);
+    console.log("✅ CORS allowed:", allowedOrigins);
+  });
+})();
