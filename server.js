@@ -247,6 +247,60 @@ app.post("/api/public/chat", requireShApiKey, rateLimit, async (req, res) => {
   }
 });
 
+
+// Public search (used by frontend Search Shynvo)
+app.post("/api/public/search", requireShApiKey, rateLimit, async (req, res) => {
+  try {
+    if (!openai) {
+      return res.status(500).json({
+        error: "OPENAI_API_KEY missing",
+        build: BUILD_TAG,
+      });
+    }
+
+    const userInput =
+      String(req.body?.query || req.body?.message || "").trim();
+
+    if (!userInput) {
+      return res.status(400).json({
+        error: "Missing search query",
+        build: BUILD_TAG,
+      });
+    }
+
+    const messages = [
+      {
+        role: "system",
+        content:
+          "You are Shynvo Search. Answer clearly, helpfully, and concisely. " +
+          "You help users understand the Shynvo platform, its environments, and general questions. " +
+          "If the user asks about Shynvo, explain the most relevant environment when useful. " +
+          "Keep answers direct and readable.",
+      },
+      {
+        role: "user",
+        content: userInput,
+      },
+    ];
+
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages,
+    });
+
+    res.json({
+      answer: completion.choices?.[0]?.message?.content || "",
+      build: BUILD_TAG,
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: "Search error",
+      details: err?.message || String(err),
+      build: BUILD_TAG,
+    });
+  }
+});
+
 // ===============================
 // 404
 // ===============================
