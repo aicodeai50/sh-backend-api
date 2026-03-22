@@ -231,14 +231,6 @@ app.post("/api/public/chat", requireShApiKey, rateLimit, async (req, res) => {
     const rawMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
     const imageDataUrl = String(req.body?.imageDataUrl || "").trim();
 
-    console.log("PUBLIC CHAT DEBUG", {
-      hasImageDataUrl: Boolean(imageDataUrl),
-      imagePrefix: imageDataUrl ? imageDataUrl.slice(0, 40) : "",
-      messageCount: rawMessages.length,
-      lastRole: rawMessages.length ? rawMessages[rawMessages.length - 1]?.role : null,
-      lastContentType: rawMessages.length ? typeof rawMessages[rawMessages.length - 1]?.content : null,
-    });
-
     let messages = rawMessages;
 
     if (imageDataUrl) {
