@@ -229,27 +229,42 @@ app.post("/api/public/chat", requireShApiKey, rateLimit, async (req, res) => {
     }
 
     const rawMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+    const fallbackMessage = String(req.body?.message || "").trim();
+    const fallbackSystemPrompt = String(req.body?.systemPrompt || "").trim();
     const imageDataUrl = String(req.body?.imageDataUrl || "").trim();
+
+    let messages =
+      rawMessages.length > 0
+        ? rawMessages
+        : [
+            ...(fallbackSystemPrompt
+              ? [{ role: "system", content: fallbackSystemPrompt }]
+              : []),
+            ...(fallbackMessage
+              ? [{ role: "user", content: fallbackMessage }]
+              : []),
+          ];
 
     console.log("PUBLIC CHAT DEBUG", {
       hasImageDataUrl: Boolean(imageDataUrl),
       imagePrefix: imageDataUrl ? imageDataUrl.slice(0, 40) : "",
-      messageCount: rawMessages.length,
-      lastRole: rawMessages.length ? rawMessages[rawMessages.length - 1]?.role : null,
-      lastContentType: rawMessages.length ? typeof rawMessages[rawMessages.length - 1]?.content : null,
+      messageCount: messages.length,
+      usedFallback: rawMessages.length === 0,
+      hasFallbackMessage: Boolean(fallbackMessage),
+      hasFallbackSystemPrompt: Boolean(fallbackSystemPrompt),
+      lastRole: messages.length ? messages[messages.length - 1]?.role : null,
+      lastContentType: messages.length ? typeof messages[messages.length - 1]?.content : null,
     });
 
-    let messages = rawMessages;
-
     if (imageDataUrl) {
-      const lastUserIndex = [...rawMessages]
+      const lastUserIndex = [...messages]
         .map((m, i) => ({ m, i }))
         .filter(({ m }) => m && m.role === "user")
         .map(({ i }) => i)
         .pop();
 
       if (typeof lastUserIndex === "number") {
-        messages = rawMessages.map((msg, index) => {
+        messages = messages.map((msg, index) => {
           if (index !== lastUserIndex) return msg;
 
           return {
@@ -271,24 +286,31 @@ app.post("/api/public/chat", requireShApiKey, rateLimit, async (req, res) => {
       }
     }
 
+    if (!Array.isArray(messages) || messages.length < 1) {
+      return res.status(400).json({
+        error: "Missing chat input",
+        details: "Provide messages[] or message.",
+        build: BUILD_TAG,
+      });
+    }
+
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
       messages,
     });
 
-    res.json({
+    return res.json({
       reply: completion.choices?.[0]?.message?.content || "",
       build: BUILD_TAG,
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       error: "Chat error",
       details: err?.message || String(err),
       build: BUILD_TAG,
     });
   }
 });
-
 
 // Public search (used by frontend Search Shynvo)
 app.post("/api/public/search", requireShApiKey, rateLimit, async (req, res) => {
