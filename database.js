@@ -1,27 +1,18 @@
-const { Sequelize, DataTypes } = require("sequelize");
+const { DataTypes } = require("sequelize");
+const { createSequelize } = require("./services/database/sequelize.factory");
+const { connectMongo } = require("./services/database/mongodb");
+const { connectRedis } = require("./services/database/redis");
 
-// ===============================
-// DATABASE INSTANCE
-// ===============================
-const sequelize = new Sequelize({
-  dialect: "sqlite",
-  storage: "database.sqlite",
-  logging: false,
-});
+const sequelize = createSequelize();
 
-// ===============================
-// USER MODEL (✅ FIXED)
-// ===============================
 const User = sequelize.define("User", {
   id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
 
   email: { type: DataTypes.STRING, unique: true, allowNull: false },
   name: { type: DataTypes.STRING, allowNull: true },
 
-  // ✅ store bcrypt hash here
   password_hash: { type: DataTypes.STRING, allowNull: false },
 
-  // ✅ trial system (7 days)
   plan: { type: DataTypes.STRING, allowNull: false, defaultValue: "trial" },
   trial_started_at: {
     type: DataTypes.DATE,
@@ -34,34 +25,21 @@ const User = sequelize.define("User", {
     defaultValue: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
   },
 
-  // usage limits
   vm_runs_used: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
 
-  // Roles
   role: { type: DataTypes.STRING, allowNull: false, defaultValue: "student" },
 
-  // Multi-tenant
   company_id: { type: DataTypes.STRING, allowNull: true },
 
-  // optional token storage (not required if you use JWT only)
   authToken: { type: DataTypes.STRING, allowNull: true },
 });
 
-// ===============================
-// VM MODEL
-// ===============================
 const VmFactory = require("./models/Vm");
 const Vm = VmFactory(sequelize);
 
-// ===============================
-// VM FILE MODEL
-// ===============================
 const VmFileFactory = require("./models/VmFile");
 const VmFile = VmFileFactory(sequelize);
 
-// ===============================
-// COMPANY MODEL
-// ===============================
 const Company = sequelize.define(
   "Company",
   {
@@ -76,9 +54,6 @@ const Company = sequelize.define(
   { tableName: "companies", timestamps: false }
 );
 
-// ===============================
-// COMPANY MEMBER MODEL
-// ===============================
 const CompanyMember = sequelize.define(
   "CompanyMember",
   {
@@ -92,9 +67,6 @@ const CompanyMember = sequelize.define(
   { tableName: "company_members", timestamps: false }
 );
 
-// ===============================
-// RELATIONS
-// ===============================
 User.hasMany(Vm, { foreignKey: "owner_user_id" });
 Vm.belongsTo(User, { foreignKey: "owner_user_id" });
 
@@ -113,17 +85,34 @@ CompanyMember.belongsTo(User, { foreignKey: "user_id" });
 Company.hasMany(User, { foreignKey: "company_id" });
 User.belongsTo(Company, { foreignKey: "company_id" });
 
-// ===============================
-// CONNECT + SYNC
-// ===============================
+const GenericRecord = sequelize.define(
+  "GenericRecord",
+  {
+    id: { type: DataTypes.STRING, primaryKey: true, allowNull: false },
+    namespace: { type: DataTypes.STRING, allowNull: false },
+    data: { type: DataTypes.TEXT, allowNull: false },
+    owner_user_id: { type: DataTypes.INTEGER, allowNull: true },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "generic_records",
+    timestamps: false,
+    indexes: [{ fields: ["namespace"] }, { fields: ["owner_user_id"] }],
+  }
+);
+
 async function connectDatabase() {
   try {
     await sequelize.authenticate();
-    console.log("🗄️ Database connected");
+    console.log("🗄️ SQL database connected");
 
     const force = String(process.env.FORCE_DB_SYNC || "").trim() === "1";
+    const dialect = sequelize.getDialect();
 
-    await sequelize.query("PRAGMA foreign_keys = OFF;");
+    if (dialect === "sqlite") {
+      await sequelize.query("PRAGMA foreign_keys = OFF;");
+    }
 
     if (force) {
       console.log("⚠️ FORCE_DB_SYNC=1 → dropping & recreating all tables");
@@ -134,16 +123,21 @@ async function connectDatabase() {
       console.log("📦 Database synced");
     }
 
-    await sequelize.query("PRAGMA foreign_keys = ON;");
+    if (dialect === "sqlite") {
+      await sequelize.query("PRAGMA foreign_keys = ON;");
+    }
+
+    const mongo = await connectMongo();
+    if (mongo.enabled) console.log("🍃 MongoDB connected");
+
+    const redis = await connectRedis();
+    if (redis.enabled) console.log("🔴 Redis connected");
   } catch (error) {
     console.error("❌ Database connection failed:", error);
     process.exit(1);
   }
 }
 
-// ===============================
-// EXPORTS
-// ===============================
 module.exports = {
   sequelize,
   connectDatabase,
@@ -152,4 +146,5 @@ module.exports = {
   VmFile,
   Company,
   CompanyMember,
+  GenericRecord,
 };

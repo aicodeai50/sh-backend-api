@@ -12,7 +12,7 @@ const path = require("path");
 const fs = require("fs");
 
 // ✅ connect Sequelize + sync models
-const { connectDatabase } = require("./database");
+const { connectDatabase, sequelize } = require("./database");
 
 // ===============================
 // ENV
@@ -31,6 +31,10 @@ const { requireUser } = require("./middleware/requireUser");
 
 // ✅ Company routes
 const companyRoutes = require("./routes/company/company.routes");
+const buildDataRouter = require("./routes/data/data.routes");
+const buildApiV1Router = require("./routes/api/v1");
+const { optionalUser } = require("./middleware/optionalUser");
+const { getCorsConfig } = require("./config/platform.config");
 
 // ===============================
 // APP
@@ -45,7 +49,7 @@ const PORT = process.env.PORT || 8080;
 
 // Comma-separated list:
 // FRONTEND_ORIGIN=https://shynvo-web.vercel.app,https://shynvo.app,http://localhost:3000
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
+const corsConfig = getCorsConfig();
 
 const SH_API_KEY = (process.env.SH_API_KEY || "").trim();
 const JWT_SECRET = (process.env.JWT_SECRET || "").trim();
@@ -70,19 +74,17 @@ app.use(express.json({ limit: "8mb" }));
 app.use(cookieParser());
 
 // CORS must allow cookies (credentials: true)
-const allowedOrigins = FRONTEND_ORIGIN.split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const allowedOrigins = corsConfig.origins;
 
 const corsOptions = {
   origin: (origin, cb) => {
-    // allow curl/postman (no origin)
     if (!origin) return cb(null, true);
+    if (corsConfig.allowAll || allowedOrigins.includes("*")) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
     return cb(new Error(`CORS blocked: ${origin}`));
   },
   credentials: true,
-  methods: ["GET", "POST", "OPTIONS"],
+  methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "x-sh-api-key", "Authorization"],
 };
 
@@ -217,6 +219,12 @@ const vmRoutes = buildVmRouter({ openai, model: OPENAI_MODEL });
 app.use("/vm", requireShApiKey, rateLimit, requireUser(), vmRoutes);
 
 app.use("/company", requireShApiKey, rateLimit, requireUser(), companyRoutes);
+
+const dataRoutes = buildDataRouter({ sequelize, buildTag: BUILD_TAG });
+app.use("/data", requireShApiKey, rateLimit, optionalUser(), dataRoutes);
+
+const apiV1Routes = buildApiV1Router({ sequelize, buildTag: BUILD_TAG });
+app.use("/api/v1", requireShApiKey, rateLimit, optionalUser(), apiV1Routes);
 
 // Public chat (used by frontend guide)
 app.post("/api/public/chat", requireShApiKey, rateLimit, async (req, res) => {

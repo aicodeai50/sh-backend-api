@@ -1,0 +1,68 @@
+# Zentro Backend
+name: zentro-backend
+
+services:
+  backend:
+    container_name: zentro-backend
+    build: .
+    image: zentro-backend:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
+    environment:
+      PORT: 8080
+      DB_DIALECT: postgres
+      DATABASE_URL: postgresql://zentro:zentro@postgres:5432/zentro
+      MONGODB_ENABLED: "true"
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB: zentro
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379
+      UPLOADS_DIR: /app/uploads
+    volumes:
+      - zentro-uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  postgres:
+    container_name: zentro-backend-postgres
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zentro
+      POSTGRES_PASSWORD: zentro
+      POSTGRES_DB: zentro
+    volumes:
+      - zentro-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zentro -d zentro"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    container_name: zentro-backend-mongo
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - zentro-mongo:/data/db
+
+  redis:
+    container_name: zentro-backend-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - zentro-redis:/data
+
+volumes:
+  zentro-postgres:
+  zentro-mongo:
+  zentro-redis:
+  zentro-uploads:

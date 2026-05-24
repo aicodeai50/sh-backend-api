@@ -57,9 +57,6 @@ function shapeUser(u) {
   };
 }
 
-//
-// REGISTER
-//
 router.post("/register", async (req, res) => {
   try {
     const email = String(req.body?.email || "").trim().toLowerCase();
@@ -81,7 +78,7 @@ router.post("/register", async (req, res) => {
     const user = await createUser({
       email,
       name,
-      password_hash, // ✅ FIXED
+      password_hash,
       plan: "trial",
       trial_started_at: now,
       trial_ends_at: trialEnds,
@@ -100,9 +97,6 @@ router.post("/register", async (req, res) => {
   }
 });
 
-//
-// LOGIN
-//
 router.post("/login", async (req, res) => {
   try {
     const email = String(req.body?.email || "").trim().toLowerCase();
@@ -114,7 +108,6 @@ router.post("/login", async (req, res) => {
     const userRow = await getUserAuthByEmail(email);
     if (!userRow) return res.status(401).json({ error: "Invalid email or password" });
 
-    // ✅ compare with password_hash
     const ok = await bcrypt.compare(passwordPlain, userRow.password_hash);
     if (!ok) return res.status(401).json({ error: "Invalid email or password" });
 
@@ -131,17 +124,11 @@ router.post("/login", async (req, res) => {
   }
 });
 
-//
-// LOGOUT
-//
 router.post("/logout", async (_req, res) => {
   res.clearCookie(COOKIE_NAME, { path: "/" });
   return res.json({ ok: true });
 });
 
-//
-// CURRENT USER
-//
 router.get("/me", async (req, res) => {
   try {
     const token = req.cookies?.[COOKIE_NAME];
