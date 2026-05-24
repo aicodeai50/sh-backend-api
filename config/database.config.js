@@ -85,7 +85,9 @@ function getSqlConfig() {
               trustServerCertificate: envFlag("DB_TRUST_SERVER_CERT", false),
             },
           }
-        : undefined,
+        : dialect === "postgres" && envFlag("DB_SSL", false)
+          ? { ssl: { require: true, rejectUnauthorized: false } }
+          : undefined,
     pool: {
       max: Number(process.env.DB_POOL_MAX || 10),
       min: Number(process.env.DB_POOL_MIN || 0),

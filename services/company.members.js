@@ -1,6 +1,7 @@
 // services/company.members.js
 const crypto = require("crypto");
-const { Company, CompanyMember, User } = require("../database");
+const { sequelize, Company, CompanyMember, User } = require("../database");
+const { ensureCompanyAdminSeatAvailable } = require("./company.service");
 
 function makeId(prefix) {
   return `${prefix}_${crypto.randomBytes(10).toString("hex")}`;
@@ -32,6 +33,8 @@ async function listMembers(companyId) {
     role: m.role,
     email: m.User?.email || null,
     name: m.User?.name || null,
+    plan: m.User?.plan || null,
+    vm_runs_used: m.User?.vm_runs_used ?? 0,
     created_at: m.created_at,
   }));
 }
@@ -45,39 +48,36 @@ async function addMemberByEmail({ adminUser, email }) {
   const user = await User.findOne({ where: { email: normalizedEmail } });
   if (!user) throw new Error("User not found (must register first)");
 
-  // already in a company?
   if (user.company_id && user.company_id !== company.id) {
     throw new Error("User already belongs to another company");
   }
 
-  // already a member?
   const existing = await CompanyMember.findOne({
     where: { company_id: company.id, user_id: user.id },
   });
   if (existing) return { company, user, member: existing, already: true };
 
-  // seat check
-  const count = await getMemberCount(company.id);
-  if (count >= company.seats) {
-    throw new Error(`No seats available (seats=${company.seats})`);
-  }
+  await ensureCompanyAdminSeatAvailable(company.id);
 
-  // create membership
-  const member = await CompanyMember.create({
-    id: makeId("cm"),
-    company_id: company.id,
-    user_id: user.id,
-    role: "employee",
-    created_at: new Date(),
+  return sequelize.transaction(async (transaction) => {
+    const member = await CompanyMember.create(
+      {
+        id: makeId("cm"),
+        company_id: company.id,
+        user_id: user.id,
+        role: "employee",
+        created_at: new Date(),
+      },
+      { transaction }
+    );
+
+    await User.update(
+      { role: "employee", company_id: company.id, plan: "team" },
+      { where: { id: user.id }, transaction }
+    );
+
+    return { company, user, member, already: false };
   });
-
-  // update user role + company_id
-  await User.update(
-    { role: "employee", company_id: company.id },
-    { where: { id: user.id } }
-  );
-
-  return { company, user, member, already: false };
 }
 
 async function removeMember({ adminUser, userId }) {
@@ -85,8 +85,6 @@ async function removeMember({ adminUser, userId }) {
 
   const uid = Number(userId);
   if (!uid) throw new Error("Missing userId");
-
-  // prevent admin removing themselves accidentally
   if (uid === adminUser.id) throw new Error("Admin cannot remove self");
 
   const member = await CompanyMember.findOne({
@@ -94,13 +92,13 @@ async function removeMember({ adminUser, userId }) {
   });
   if (!member) throw new Error("Member not found");
 
-  await CompanyMember.destroy({ where: { id: member.id } });
-
-  // reset user company link + role (keep plan as-is)
-  await User.update(
-    { company_id: null, role: "pro" }, // choose default role after leaving company
-    { where: { id: uid } }
-  );
+  await sequelize.transaction(async (transaction) => {
+    await CompanyMember.destroy({ where: { id: member.id }, transaction });
+    await User.update(
+      { company_id: null, role: "student", plan: "pro" },
+      { where: { id: uid }, transaction }
+    );
+  });
 
   return { ok: true };
 }
@@ -109,4 +107,5 @@ module.exports = {
   listMembers,
   addMemberByEmail,
   removeMember,
+  getMemberCount,
 };

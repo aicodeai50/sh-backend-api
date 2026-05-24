@@ -31,6 +31,25 @@ function getStorageConfig() {
   };
 }
 
+function getS3Config() {
+  const bucket = String(process.env.S3_BUCKET || "").trim();
+  const accessKeyId = String(process.env.S3_ACCESS_KEY_ID || "").trim();
+  const secretAccessKey = String(process.env.S3_SECRET_ACCESS_KEY || "").trim();
+  const enabled = envFlag("S3_ENABLED", Boolean(bucket && accessKeyId && secretAccessKey));
+
+  return {
+    enabled: enabled && Boolean(bucket && accessKeyId && secretAccessKey),
+    bucket,
+    region: String(process.env.S3_REGION || "auto").trim(),
+    endpoint: String(process.env.S3_ENDPOINT || "").trim() || undefined,
+    accessKeyId,
+    secretAccessKey,
+    publicBaseUrl: String(process.env.S3_PUBLIC_URL || "").trim() || undefined,
+    keyPrefix: String(process.env.S3_KEY_PREFIX || "uploads/").trim(),
+    forcePathStyle: envFlag("S3_FORCE_PATH_STYLE", Boolean(process.env.S3_ENDPOINT)),
+  };
+}
+
 function getGenericSqlTables() {
   const raw = String(process.env.GENERIC_SQL_TABLES || "GenericRecord").trim();
   return raw
@@ -42,6 +61,7 @@ function getGenericSqlTables() {
 module.exports = {
   getCorsConfig,
   getStorageConfig,
+  getS3Config,
   getGenericSqlTables,
   envFlag,
 };

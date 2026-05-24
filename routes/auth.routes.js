@@ -43,16 +43,17 @@ function shapeUser(u) {
   const trialEnds = u.trial_ends_at || null;
   const plan = u.plan || "trial";
   const trialActive = trialEnds ? new Date() < new Date(trialEnds) : false;
-  const access = plan === "pro" || plan === "team" || (plan === "trial" && trialActive);
 
   return {
     id: u.id,
     name: u.name || null,
     email: u.email,
     plan,
+    role: u.role || "student",
+    companyId: u.company_id || null,
     trialEndsAt: trialEnds,
     trialActive,
-    access,
+    access: plan === "pro" || plan === "team" || (plan === "trial" && trialActive),
     createdAt: u.createdAt || null,
   };
 }
@@ -88,7 +89,7 @@ router.post("/register", async (req, res) => {
     res.cookie(COOKIE_NAME, token, cookieOptions());
 
     const fullUser = await getUserById(user.id);
-    return res.json({ ok: true, user: shapeUser(fullUser) });
+    return res.json({ ok: true, token, user: shapeUser(fullUser) });
   } catch (err) {
     return res.status(500).json({
       error: "Register failed",
@@ -115,7 +116,7 @@ router.post("/login", async (req, res) => {
     res.cookie(COOKIE_NAME, token, cookieOptions());
 
     const user = await getUserById(userRow.id);
-    return res.json({ ok: true, user: shapeUser(user) });
+    return res.json({ ok: true, token, user: shapeUser(user) });
   } catch (err) {
     return res.status(500).json({
       error: "Login failed",
@@ -131,7 +132,12 @@ router.post("/logout", async (_req, res) => {
 
 router.get("/me", async (req, res) => {
   try {
-    const token = req.cookies?.[COOKIE_NAME];
+    let token = req.cookies?.[COOKIE_NAME];
+
+    const auth = String(req.headers.authorization || "");
+    const match = auth.match(/^Bearer\s+(.+)$/i);
+    if (match) token = match[1].trim();
+
     const payload = token ? verifyToken(token) : null;
 
     if (!payload?.userId) return res.json({ ok: true, user: null });

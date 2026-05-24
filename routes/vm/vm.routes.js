@@ -5,8 +5,12 @@ const {
   listVMsByOwner,
   cancelVM,
   getLive,
+  countActiveVMsForUser,
 } = require("../../services/vm.store");
 const { runVM } = require("../../services/vm.runner");
+const { getActiveVmLimitError } = require("../../services/limits.service");
+const { incrementVmRunsUsed } = require("../../services/user.service");
+const { Vm } = require("../../database");
 
 function safeJsonParse(str, fallback) {
   try {
@@ -57,13 +61,32 @@ module.exports = function buildVmRouter({ openai, model }) {
       return res.status(400).json({ error: "type and task are required" });
     }
 
-    const vm = await createVM({
+    const active = countActiveVMsForUser(req.user.id);
+    const limitError = getActiveVmLimitError(req.user, active);
+    if (limitError) {
+      return res.status(429).json(limitError);
+    }
+
+    const vm = createVM({
       type,
       task,
       owner_user_id: req.user.id,
     });
 
-    // run async
+    try {
+      await Vm.create({
+        id: vm.id,
+        owner_user_id: req.user.id,
+        type,
+        task,
+        status: "queued",
+        created_at: new Date(),
+      });
+      await incrementVmRunsUsed(req.user.id, 1);
+    } catch (err) {
+      console.error("VM persist error:", err?.message || err);
+    }
+
     runVM({ vmId: vm.id, openai, model }).catch(() => {});
 
     res.json({ vm_id: vm.id, status: "queued" });

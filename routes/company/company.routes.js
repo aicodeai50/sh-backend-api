@@ -2,33 +2,31 @@
 const express = require("express");
 const router = express.Router();
 
-const { Company, CompanyMember, User, Vm } = require("../../database");
-
+const { CompanyMember, User } = require("../../database");
+const requireRole = require("../../middleware/requireRole");
+const {
+  createCompanyAndAdmin,
+  updateCompany,
+  getCompanyProfile,
+  getCompanyAnalytics,
+  assertMemberInCompany,
+  getCompanyMemberUserIds,
+} = require("../../services/company.service");
 const {
   listMembers,
   addMemberByEmail,
   removeMember,
 } = require("../../services/company.members");
+const { listVMsByOwner, countVMsForUsers } = require("../../services/vm.store");
 
-// NOTE: requireUser() is already applied in server.js for /company
-
-function requireRole(allowed = []) {
-  return (req, res, next) => {
-    const role = req.user?.role;
-    if (!role) return res.status(401).json({ error: "Missing user role" });
-    if (!allowed.includes(role))
-      return res.status(403).json({ error: "Forbidden" });
-    next();
-  };
+function requireCompanyMember(req, res, next) {
+  if (!req.user?.company_id) {
+    return res.status(400).json({ error: "No company on user" });
+  }
+  next();
 }
 
-function makeId(prefix) {
-  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(
-    16
-  )}`;
-}
-
-// POST /company/teams  -> create company + set caller as admin
+// POST /company/teams -> create company + set caller as admin
 router.post("/teams", async (req, res) => {
   try {
     const name = String(req.body?.name || "").trim();
@@ -39,53 +37,59 @@ router.post("/teams", async (req, res) => {
       return res.status(400).json({ error: "Invalid seats" });
     }
 
-    const company = await Company.create({
-      id: makeId("co"),
+    const company = await createCompanyAndAdmin({
       name,
-      plan: "team",
+      userId: req.user.id,
       seats,
-      created_at: new Date(),
     });
 
-    await CompanyMember.create({
-      id: makeId("cm"),
-      company_id: company.id,
-      user_id: req.user.id,
-      role: "company_admin",
-      created_at: new Date(),
-    });
-
-    await User.update(
-      { role: "company_admin", company_id: company.id },
-      { where: { id: req.user.id } }
-    );
-
-    res.json({ company });
+    const profile = await getCompanyProfile(company.id);
+    res.status(201).json({ ok: true, company: profile });
   } catch (err) {
+    const msg = err?.message || "Failed to create company";
+    const status = msg.includes("already belongs") ? 409 : 500;
     console.error("POST /company/teams error:", err);
-    res.status(500).json({ error: "Failed to create company" });
+    res.status(status).json({ error: msg });
   }
 });
 
-// ===============================
-// COMPANY MEMBERS (ADMIN ONLY)
-// ===============================
+// GET /company -> company profile for any member
+router.get("/", requireCompanyMember, async (req, res) => {
+  try {
+    const profile = await getCompanyProfile(req.user.company_id);
+    if (!profile) return res.status(404).json({ error: "Company not found" });
+    res.json({ ok: true, company: profile, role: req.user.role });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load company" });
+  }
+});
 
-// GET /company/members  -> list members in company
+// PATCH /company -> update name/seats (admin only)
+router.patch("/", requireRole(["company_admin"]), async (req, res) => {
+  try {
+    const company = await updateCompany({
+      adminUser: req.user,
+      name: req.body?.name,
+      seats: req.body?.seats,
+    });
+    res.json({ ok: true, company });
+  } catch (err) {
+    const status = err?.message === "Forbidden" ? 403 : 400;
+    res.status(status).json({ error: err?.message || "Failed to update company" });
+  }
+});
+
+// GET /company/members
 router.get("/members", requireRole(["company_admin"]), async (req, res) => {
   try {
-    const companyId = req.user.company_id;
-    if (!companyId) return res.status(400).json({ error: "No company on user" });
-
-    const members = await listMembers(companyId);
-    res.json({ company_id: companyId, members });
+    const members = await listMembers(req.user.company_id);
+    res.json({ company_id: req.user.company_id, members });
   } catch (err) {
-    console.error("GET /company/members error:", err);
     res.status(500).json({ error: err?.message || "Failed to list members" });
   }
 });
 
-// POST /company/members  -> add member by email (user must exist)
+// POST /company/members
 router.post("/members", requireRole(["company_admin"]), async (req, res) => {
   try {
     const email = String(req.body?.email || "").trim();
@@ -98,12 +102,11 @@ router.post("/members", requireRole(["company_admin"]), async (req, res) => {
       company: { id: result.company.id, seats: result.company.seats },
     });
   } catch (err) {
-    console.error("POST /company/members error:", err);
     res.status(400).json({ error: err?.message || "Failed to add member" });
   }
 });
 
-// DELETE /company/members/:userId -> remove member from company
+// DELETE /company/members/:userId
 router.delete(
   "/members/:userId",
   requireRole(["company_admin"]),
@@ -115,63 +118,70 @@ router.delete(
       });
       res.json(result);
     } catch (err) {
-      console.error("DELETE /company/members/:userId error:", err);
       res.status(400).json({ error: err?.message || "Failed to remove member" });
     }
   }
 );
 
-// GET /company/analytics (admin only)
+// GET /company/analytics
 router.get("/analytics", requireRole(["company_admin"]), async (req, res) => {
   try {
-    const companyId = req.user.company_id;
-    if (!companyId) return res.status(400).json({ error: "No company on user" });
-
-    const members = await CompanyMember.count({
-      where: { company_id: companyId },
-    });
-
-    // v1: count VMs by the admin user (expand later to all members)
-    const vmCount = await Vm.count({ where: { owner_user_id: req.user.id } });
-
-    res.json({
-      company_id: companyId,
-      members,
-      vm_runs_admin: vmCount,
-      notes: "v1 analytics; expand later to all members",
-    });
+    const analytics = await getCompanyAnalytics(req.user.company_id);
+    res.json({ ok: true, analytics });
   } catch (err) {
-    console.error("GET /company/analytics error:", err);
-    res.status(500).json({ error: "Failed to load analytics" });
+    res.status(500).json({ error: err?.message || "Failed to load analytics" });
   }
 });
 
-// POST /company/skill-matrix (admin only) - placeholder v1
-router.post("/skill-matrix", requireRole(["company_admin"]), async (req, res) => {
+// GET /company/vms -> admin view of company VM activity
+router.get("/vms", requireRole(["company_admin"]), async (req, res) => {
   try {
-    const companyId = req.user.company_id;
-    if (!companyId) return res.status(400).json({ error: "No company on user" });
-
-    const members = await CompanyMember.findAll({
-      where: { company_id: companyId },
-      include: [{ model: User }],
+    const userIds = await getCompanyMemberUserIds(req.user.company_id);
+    const users = await User.findAll({
+      where: { id: userIds },
+      attributes: ["id", "email", "name", "vm_runs_used"],
     });
 
+    const summary = users.map((u) => ({
+      user_id: u.id,
+      email: u.email,
+      name: u.name,
+      vm_runs_used: u.vm_runs_used,
+      active_vms: listVMsByOwner(u.id).filter(
+        (vm) => vm.status === "queued" || vm.status === "running"
+      ).length,
+    }));
+
+    res.json({
+      ok: true,
+      company_id: req.user.company_id,
+      vm_total_runtime: countVMsForUsers(userIds),
+      members: summary,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load company VMs" });
+  }
+});
+
+// POST /company/skill-matrix
+router.post("/skill-matrix", requireRole(["company_admin"]), async (req, res) => {
+  try {
+    const members = await listMembers(req.user.company_id);
     const matrix = members.map((m) => ({
       user_id: m.user_id,
-      name: m.User?.name || m.User?.email || "Member",
+      name: m.name || m.email || "Member",
       role: m.role,
+      vm_runs_used: m.vm_runs_used,
       skills: { javascript: 0, react: 0, backend: 0, devops: 0 },
     }));
 
-    res.json({ company_id: companyId, matrix });
+    res.json({ company_id: req.user.company_id, matrix });
   } catch (err) {
-    console.error("POST /company/skill-matrix error:", err);
     res.status(500).json({ error: "Failed to build skill matrix" });
   }
 });
 
-// POST /company/upskill-plan (admin only) - placeholder v1
+// POST /company/upskill-plan
 router.post("/upskill-plan", requireRole(["company_admin"]), async (req, res) => {
   try {
     const targetRole = String(req.body?.target_role || "Fullstack").trim();
@@ -193,20 +203,22 @@ router.post("/upskill-plan", requireRole(["company_admin"]), async (req, res) =>
 
     res.json({ company_id: req.user.company_id, plan });
   } catch (err) {
-    console.error("POST /company/upskill-plan error:", err);
     res.status(500).json({ error: "Failed to create upskill plan" });
   }
 });
 
-// POST /company/interview-score (admin only) - placeholder v1
+// POST /company/interview-score
 router.post(
   "/interview-score",
   requireRole(["company_admin"]),
   async (req, res) => {
     try {
       const employeeUserId = Number(req.body?.user_id);
-      if (!employeeUserId)
+      if (!employeeUserId) {
         return res.status(400).json({ error: "Missing user_id" });
+      }
+
+      await assertMemberInCompany(req.user.company_id, employeeUserId);
 
       const score = {
         user_id: employeeUserId,
@@ -221,8 +233,8 @@ router.post(
 
       res.json({ company_id: req.user.company_id, score });
     } catch (err) {
-      console.error("POST /company/interview-score error:", err);
-      res.status(500).json({ error: "Failed to score interview" });
+      const status = err?.message?.includes("not a member") ? 404 : 400;
+      res.status(status).json({ error: err?.message || "Failed to score interview" });
     }
   }
 );

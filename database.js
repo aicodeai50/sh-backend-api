@@ -64,7 +64,7 @@ const CompanyMember = sequelize.define(
     role: { type: DataTypes.STRING, allowNull: false, defaultValue: "employee" },
     created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   },
-  { tableName: "company_members", timestamps: false }
+  { tableName: "company_members", timestamps: false, indexes: [{ unique: true, fields: ["company_id", "user_id"] }] }
 );
 
 User.hasMany(Vm, { foreignKey: "owner_user_id" });
@@ -102,13 +102,61 @@ const GenericRecord = sequelize.define(
   }
 );
 
-async function connectDatabase() {
-  try {
-    await sequelize.authenticate();
-    console.log("🗄️ SQL database connected");
+async function connectMongoWithRetry(maxAttempts = 8) {
+  const { getMongoConfig } = require("./services/database/mongodb");
+  if (!getMongoConfig().enabled) return { enabled: false };
 
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await connectMongo();
+    } catch (error) {
+      if (attempt >= maxAttempts) throw error;
+      console.warn(
+        `MongoDB connect attempt ${attempt}/${maxAttempts} failed, retrying...`
+      );
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
+
+async function connectRedisWithRetry(maxAttempts = 8) {
+  const { getRedisConfig } = require("./services/database/redis");
+  if (!getRedisConfig().enabled) return { enabled: false };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await connectRedis();
+    } catch (error) {
+      if (attempt >= maxAttempts) throw error;
+      console.warn(
+        `Redis connect attempt ${attempt}/${maxAttempts} failed, retrying...`
+      );
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
+
+async function connectDatabase() {
+  const dialect = sequelize.getDialect();
+  const isProd = String(process.env.NODE_ENV || "").trim() === "production";
+  const maxAttempts = dialect === "postgres" ? 8 : 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await sequelize.authenticate();
+      console.log(`🗄️ SQL database connected (${dialect})`);
+      break;
+    } catch (error) {
+      if (attempt >= maxAttempts) throw error;
+      console.warn(
+        `Database connect attempt ${attempt}/${maxAttempts} failed, retrying...`
+      );
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  try {
     const force = String(process.env.FORCE_DB_SYNC || "").trim() === "1";
-    const dialect = sequelize.getDialect();
 
     if (dialect === "sqlite") {
       await sequelize.query("PRAGMA foreign_keys = OFF;");
@@ -118,6 +166,9 @@ async function connectDatabase() {
       console.log("⚠️ FORCE_DB_SYNC=1 → dropping & recreating all tables");
       await sequelize.sync({ force: true });
       console.log("📦 Database force-synced");
+    } else if (isProd && dialect !== "sqlite") {
+      await sequelize.sync();
+      console.log("📦 Database synced (production)");
     } else {
       await sequelize.sync({ alter: true });
       console.log("📦 Database synced");
@@ -127,10 +178,10 @@ async function connectDatabase() {
       await sequelize.query("PRAGMA foreign_keys = ON;");
     }
 
-    const mongo = await connectMongo();
+    const mongo = await connectMongoWithRetry();
     if (mongo.enabled) console.log("🍃 MongoDB connected");
 
-    const redis = await connectRedis();
+    const redis = await connectRedisWithRetry();
     if (redis.enabled) console.log("🔴 Redis connected");
   } catch (error) {
     console.error("❌ Database connection failed:", error);

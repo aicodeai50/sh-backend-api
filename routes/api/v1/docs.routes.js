@@ -7,12 +7,13 @@ const {
   deleteDocument,
   getDocumentBackend,
 } = require("../../../services/storage/document.store");
+const { resolveCollectionScope } = require("../../../services/company.namespace");
 
 function buildDocsRouter() {
   const router = express.Router();
 
   router.get("/:collection", async (req, res) => {
-    const collection = String(req.params.collection || "").trim();
+    const collection = resolveCollectionScope(req);
     if (!collection) return res.status(400).json({ error: "Missing collection" });
 
     const limit = req.query.limit;
@@ -27,7 +28,7 @@ function buildDocsRouter() {
   });
 
   router.get("/:collection/:id", async (req, res) => {
-    const collection = String(req.params.collection || "").trim();
+    const collection = resolveCollectionScope(req);
     const id = String(req.params.id || "").trim();
     if (!collection || !id) {
       return res.status(400).json({ error: "Missing collection or id" });
@@ -44,7 +45,7 @@ function buildDocsRouter() {
   });
 
   router.post("/:collection", async (req, res) => {
-    const collection = String(req.params.collection || "").trim();
+    const collection = resolveCollectionScope(req);
     if (!collection) return res.status(400).json({ error: "Missing collection" });
 
     const payload = req.body?.doc ?? req.body;
@@ -59,11 +60,12 @@ function buildDocsRouter() {
       ok: true,
       backend: result.backend,
       id: result.id,
+      collection,
     });
   });
 
   router.patch("/:collection/:id", async (req, res) => {
-    const collection = String(req.params.collection || "").trim();
+    const collection = resolveCollectionScope(req);
     const id = String(req.params.id || "").trim();
     if (!collection || !id) {
       return res.status(400).json({ error: "Missing collection or id" });
@@ -85,7 +87,7 @@ function buildDocsRouter() {
   });
 
   router.delete("/:collection/:id", async (req, res) => {
-    const collection = String(req.params.collection || "").trim();
+    const collection = resolveCollectionScope(req);
     const id = String(req.params.id || "").trim();
     if (!collection || !id) {
       return res.status(400).json({ error: "Missing collection or id" });

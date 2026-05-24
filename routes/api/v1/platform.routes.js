@@ -2,6 +2,7 @@ const express = require("express");
 const { getPlatformStatus } = require("../../../services/database/platform.status");
 const { getCacheBackend } = require("../../../services/storage/cache.store");
 const { getDocumentBackend } = require("../../../services/storage/document.store");
+const { getFileBackend } = require("../../../services/storage/file.store");
 const { getSqlConfig } = require("../../../config/database.config");
 const { getCorsConfig } = require("../../../config/platform.config");
 
@@ -62,6 +63,7 @@ function buildPlatformRouter({ sequelize, buildTag }) {
           delete: "DELETE /api/v1/cache/:key",
         },
         files: {
+          backend: getFileBackend(),
           upload: "POST /api/v1/files/upload",
           get: "GET /api/v1/files/:filename",
           list: "GET /api/v1/files",
@@ -75,6 +77,17 @@ function buildPlatformRouter({ sequelize, buildTag }) {
         codeExplainer: "POST /ai/code-explainer",
         researchFinder: "POST /ai/research-finder",
         interviewSimulator: "POST /ai/interview-simulator",
+      },
+      company: {
+        createTeam: "POST /company/teams",
+        profile: "GET /company",
+        update: "PATCH /company",
+        members: "GET /company/members",
+        addMember: "POST /company/members",
+        removeMember: "DELETE /company/members/:userId",
+        analytics: "GET /company/analytics",
+        vms: "GET /company/vms",
+        companyScopedDocs: "Use ?scope=company on /api/v1/docs/:collection",
       },
       cors: {
         allowAll: cors.allowAll,

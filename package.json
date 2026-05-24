@@ -7,12 +7,17 @@
     "start": "node server.js",
     "docker:up": "docker compose -p zentro-backend up -d --build",
     "docker:down": "docker compose -p zentro-backend down",
-    "docker:logs": "docker compose -p zentro-backend logs -f backend"
+    "docker:logs": "docker compose -p zentro-backend logs -f backend",
+    "verify:railway": "node scripts/verify-railway.js",
+    "verify:company": "node scripts/verify-company.js",
+    "verify:all": "node scripts/verify-all.js",
+    "railway:sync-env": "node scripts/sync-railway-env.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1053.0",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",

@@ -56,6 +56,34 @@ function listVMsByOwner(owner_user_id) {
   return out;
 }
 
+function countActiveVMsForUser(owner_user_id) {
+  let count = 0;
+  for (const vm of vms.values()) {
+    if (vm.owner_user_id !== owner_user_id) continue;
+    if (vm.status === "queued" || vm.status === "running") count++;
+  }
+  return count;
+}
+
+function countVMsForUsers(userIds = []) {
+  const allowed = new Set(userIds.map(Number));
+  let count = 0;
+  for (const vm of vms.values()) {
+    if (allowed.has(Number(vm.owner_user_id))) count++;
+  }
+  return count;
+}
+
+function countActiveVMsForUsers(userIds = []) {
+  const allowed = new Set(userIds.map(Number));
+  let count = 0;
+  for (const vm of vms.values()) {
+    if (!allowed.has(Number(vm.owner_user_id))) continue;
+    if (vm.status === "queued" || vm.status === "running") count++;
+  }
+  return count;
+}
+
 function appendLog(vm, line) {
   const entry = { t: nowIso(), line: String(line) };
   vm.logs.push(entry);
@@ -202,7 +230,10 @@ At the end, output a FINAL section as JSON:
 module.exports = {
   createVM,
   getVM,
-  listVMsByOwner, // ✅ NEW
+  listVMsByOwner,
+  countActiveVMsForUser,
+  countVMsForUsers,
+  countActiveVMsForUsers,
   cancelVM,
   runVM,
   appendLog,

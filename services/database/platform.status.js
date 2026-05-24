@@ -1,6 +1,7 @@
 const { getDatabaseHealth } = require("./index");
 const { getCacheBackend, getCacheStats } = require("../storage/cache.store");
 const { getDocumentBackend } = require("../storage/document.store");
+const { getFileBackend } = require("../storage/file.store");
 const { getMongoConfig } = require("./mongodb");
 const { getRedisConfig } = require("./redis");
 const { getSqlConfig } = require("../../config/database.config");
@@ -16,6 +17,7 @@ async function getPlatformStatus(sequelize) {
     storage: {
       cache: getCacheBackend(),
       documents: getDocumentBackend(),
+      files: getFileBackend(),
       cacheStats: getCacheStats(),
       memoryFallback: storage.memoryFallback,
       uploadsDir: storage.uploadsDir,
