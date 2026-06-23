@@ -48,6 +48,7 @@ async function createUser({
   name,
   password_hash,
   plan = "trial",
+  role,
   trial_started_at,
   trial_ends_at,
 }) {
@@ -62,6 +63,7 @@ async function createUser({
     name: name ? String(name).trim() : null,
     password_hash, // ✅ correct column
     plan: String(plan || "trial"),
+    ...(role ? { role: String(role) } : {}),
     trial_started_at: trial_started_at || now,
     trial_ends_at:
       trial_ends_at || new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),

@@ -10,6 +10,7 @@ const JWT_SECRET = (process.env.JWT_SECRET || "").trim();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 const COOKIE_NAME = process.env.COOKIE_NAME || "shynvo_session";
 const IS_PROD = process.env.NODE_ENV === "production";
+const OMSORGPILOT_REGISTER_ROLES = ["admin", "superuser", "company_admin", "instructor"];
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -63,6 +64,14 @@ router.post("/register", async (req, res) => {
     const email = String(req.body?.email || "").trim().toLowerCase();
     const passwordPlain = String(req.body?.password || "");
     const name = req.body?.name ? String(req.body.name).trim() : null;
+    const product = String(req.body?.product || "").trim().toLowerCase();
+    const requestedRole = String(req.body?.role || "").trim();
+    const role =
+      product === "omsorgpilot"
+        ? OMSORGPILOT_REGISTER_ROLES.includes(requestedRole)
+          ? requestedRole
+          : "admin"
+        : undefined;
 
     if (!email) return res.status(400).json({ error: "Email required" });
     if (!passwordPlain || passwordPlain.length < 8)
@@ -81,6 +90,7 @@ router.post("/register", async (req, res) => {
       name,
       password_hash,
       plan: "trial",
+      role,
       trial_started_at: now,
       trial_ends_at: trialEnds,
     });
