@@ -102,6 +102,217 @@ const GenericRecord = sequelize.define(
   }
 );
 
+const OmsorgCourse = sequelize.define(
+  "OmsorgCourse",
+  {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    title: { type: DataTypes.STRING, allowNull: false },
+    description: { type: DataTypes.TEXT, allowNull: true },
+    department: { type: DataTypes.STRING, allowNull: true },
+    status: { type: DataTypes.STRING, allowNull: false, defaultValue: "active" },
+    due_at: { type: DataTypes.DATE, allowNull: true },
+    created_by_user_id: { type: DataTypes.INTEGER, allowNull: true },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "omsorg_courses",
+    timestamps: false,
+    indexes: [{ fields: ["status"] }, { fields: ["department"] }],
+  }
+);
+
+const OmsorgActivity = sequelize.define(
+  "OmsorgActivity",
+  {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    course_id: { type: DataTypes.UUID, allowNull: false },
+    title: { type: DataTypes.STRING, allowNull: false },
+    description: { type: DataTypes.TEXT, allowNull: true },
+    status: { type: DataTypes.STRING, allowNull: false, defaultValue: "active" },
+    required: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    sort_order: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "omsorg_activities",
+    timestamps: false,
+    indexes: [{ fields: ["course_id"] }, { fields: ["status"] }],
+  }
+);
+
+const OmsorgCheckoff = sequelize.define(
+  "OmsorgCheckoff",
+  {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    course_id: { type: DataTypes.UUID, allowNull: false },
+    activity_id: { type: DataTypes.UUID, allowNull: false },
+    employee_id: { type: DataTypes.INTEGER, allowNull: false },
+    checked_by_user_id: { type: DataTypes.INTEGER, allowNull: false },
+    checked_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    note: { type: DataTypes.TEXT, allowNull: true },
+  },
+  {
+    tableName: "omsorg_checkoffs",
+    timestamps: false,
+    indexes: [
+      { fields: ["course_id"] },
+      { fields: ["activity_id"] },
+      { fields: ["employee_id"] },
+      { fields: ["checked_at"] },
+    ],
+  }
+);
+
+const OmsorgComment = sequelize.define(
+  "OmsorgComment",
+  {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    course_id: { type: DataTypes.UUID, allowNull: true },
+    activity_id: { type: DataTypes.UUID, allowNull: true },
+    employee_id: { type: DataTypes.INTEGER, allowNull: true },
+    author_user_id: { type: DataTypes.INTEGER, allowNull: false },
+    body: { type: DataTypes.TEXT, allowNull: false },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "omsorg_comments",
+    timestamps: false,
+    indexes: [
+      { fields: ["course_id"] },
+      { fields: ["activity_id"] },
+      { fields: ["employee_id"] },
+      { fields: ["author_user_id"] },
+      { fields: ["created_at"] },
+    ],
+  }
+);
+
+const OmsorgAuditLog = sequelize.define(
+  "OmsorgAuditLog",
+  {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    actor_user_id: { type: DataTypes.INTEGER, allowNull: true },
+    action: { type: DataTypes.STRING, allowNull: false },
+    entity_type: { type: DataTypes.STRING, allowNull: false },
+    entity_id: { type: DataTypes.STRING, allowNull: true },
+    ip_address: { type: DataTypes.STRING, allowNull: true },
+    metadata: { type: DataTypes.TEXT, allowNull: true },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "omsorg_audit_logs",
+    timestamps: false,
+    indexes: [{ fields: ["actor_user_id"] }, { fields: ["entity_type"] }, { fields: ["created_at"] }],
+  }
+);
+
+const OmsorgHealthTool = sequelize.define(
+  "OmsorgHealthTool",
+  {
+    id: { type: DataTypes.STRING, primaryKey: true, allowNull: false },
+    name: { type: DataTypes.STRING, allowNull: false },
+    category: { type: DataTypes.STRING, allowNull: false },
+    status: { type: DataTypes.STRING, allowNull: false, defaultValue: "planlagt" },
+    baerum_relevant: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    digital_tilsyn_relevant: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    description: { type: DataTypes.TEXT, allowNull: false },
+    integration_notes: { type: DataTypes.TEXT, allowNull: false },
+    source_url: { type: DataTypes.TEXT, allowNull: true },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "omsorg_health_tools",
+    timestamps: false,
+    indexes: [{ fields: ["category"] }, { fields: ["status"] }, { fields: ["baerum_relevant"] }],
+  }
+);
+
+const OmsorgDigitalSupervisionRoom = sequelize.define(
+  "OmsorgDigitalSupervisionRoom",
+  {
+    id: { type: DataTypes.STRING, primaryKey: true, allowNull: false },
+    room_name: { type: DataTypes.STRING, allowNull: false },
+    department: { type: DataTypes.STRING, allowNull: false },
+    status: { type: DataTypes.STRING, allowNull: false, defaultValue: "ok" },
+    last_event_at: { type: DataTypes.DATE, allowNull: true },
+    next_check_at: { type: DataTypes.DATE, allowNull: true },
+    sensor_types: { type: DataTypes.TEXT, allowNull: false, defaultValue: "[]" },
+    open_tasks: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    notes: { type: DataTypes.TEXT, allowNull: true },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "omsorg_digital_supervision_rooms",
+    timestamps: false,
+    indexes: [{ fields: ["department"] }, { fields: ["status"] }, { fields: ["next_check_at"] }],
+  }
+);
+
+const OmsorgDeviation = sequelize.define(
+  "OmsorgDeviation",
+  {
+    id: { type: DataTypes.STRING, primaryKey: true, allowNull: false },
+    title: { type: DataTypes.STRING, allowNull: false },
+    category: { type: DataTypes.STRING, allowNull: false },
+    severity: { type: DataTypes.STRING, allowNull: false, defaultValue: "middels" },
+    status: { type: DataTypes.STRING, allowNull: false, defaultValue: "apen" },
+    department: { type: DataTypes.STRING, allowNull: false },
+    source: { type: DataTypes.STRING, allowNull: false },
+    reported_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    due_at: { type: DataTypes.DATE, allowNull: true },
+    responsible_role: { type: DataTypes.STRING, allowNull: false },
+    related_room: { type: DataTypes.STRING, allowNull: true },
+    tiltak: { type: DataTypes.TEXT, allowNull: false },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "omsorg_deviations",
+    timestamps: false,
+    indexes: [{ fields: ["status"] }, { fields: ["severity"] }, { fields: ["department"] }, { fields: ["reported_at"] }],
+  }
+);
+
+const OmsorgImplementationState = sequelize.define(
+  "OmsorgImplementationState",
+  {
+    id: { type: DataTypes.STRING, primaryKey: true, allowNull: false },
+    state_json: { type: DataTypes.TEXT, allowNull: false },
+    schema_version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    updated_by_user_id: { type: DataTypes.INTEGER, allowNull: true },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "omsorg_implementation_states",
+    timestamps: false,
+    indexes: [{ fields: ["updated_at"] }, { fields: ["updated_by_user_id"] }],
+  }
+);
+
+OmsorgCourse.hasMany(OmsorgActivity, { foreignKey: "course_id" });
+OmsorgActivity.belongsTo(OmsorgCourse, { foreignKey: "course_id" });
+
+OmsorgCourse.hasMany(OmsorgCheckoff, { foreignKey: "course_id" });
+OmsorgActivity.hasMany(OmsorgCheckoff, { foreignKey: "activity_id" });
+OmsorgCheckoff.belongsTo(OmsorgCourse, { foreignKey: "course_id" });
+OmsorgCheckoff.belongsTo(OmsorgActivity, { foreignKey: "activity_id" });
+OmsorgCheckoff.belongsTo(User, { as: "employee", foreignKey: "employee_id" });
+OmsorgCheckoff.belongsTo(User, { as: "checkedBy", foreignKey: "checked_by_user_id" });
+
+OmsorgComment.belongsTo(OmsorgCourse, { foreignKey: "course_id" });
+OmsorgComment.belongsTo(OmsorgActivity, { foreignKey: "activity_id" });
+OmsorgComment.belongsTo(User, { as: "employee", foreignKey: "employee_id" });
+OmsorgComment.belongsTo(User, { as: "author", foreignKey: "author_user_id" });
+
+OmsorgAuditLog.belongsTo(User, { as: "actor", foreignKey: "actor_user_id" });
+
+OmsorgImplementationState.belongsTo(User, { as: "updatedBy", foreignKey: "updated_by_user_id" });
+
 async function connectMongoWithRetry(maxAttempts = 8) {
   const { getMongoConfig } = require("./services/database/mongodb");
   if (!getMongoConfig().enabled) return { enabled: false };
@@ -198,4 +409,13 @@ module.exports = {
   Company,
   CompanyMember,
   GenericRecord,
+  OmsorgCourse,
+  OmsorgActivity,
+  OmsorgCheckoff,
+  OmsorgComment,
+  OmsorgAuditLog,
+  OmsorgHealthTool,
+  OmsorgDigitalSupervisionRoom,
+  OmsorgDeviation,
+  OmsorgImplementationState,
 };

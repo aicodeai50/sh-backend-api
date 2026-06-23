@@ -3,6 +3,7 @@
  * Platform: Railway
  */
 
+require("express-async-errors");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
@@ -371,6 +372,20 @@ app.post("/api/public/search", requireShApiKey, rateLimit, async (req, res) => {
       build: BUILD_TAG,
     });
   }
+});
+
+// ===============================
+// ERROR HANDLER
+// ===============================
+app.use((err, _req, res, _next) => {
+  console.error("request_error:", err);
+  if (res.headersSent) return;
+
+  res.status(err?.status || 500).json({
+    error: "Serverfeil",
+    details: process.env.NODE_ENV === "production" ? undefined : err?.message || String(err),
+    build: BUILD_TAG,
+  });
 });
 
 // ===============================
