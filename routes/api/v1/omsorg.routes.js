@@ -495,6 +495,67 @@ function buildOmsorgRouter() {
     });
   }
 
+  function careAssistantSystemPrompt() {
+    return [
+      "Du er Care Assistenten i OmsorgPilot for Bærum kommune, Helse og omsorg, Nordraaks vei sykehjem.",
+      "Svar alltid på norsk, praktisk, strukturert og med en trygg profesjonell tone.",
+      "Du hjelper superbruker, ledere og ansatte med digitalt tilsyn, RoomMate, Sensio Care, Sensio 365, kurs, sjekklister, avvik, rapporter, opplæring, personvern, nattevakt og implementering.",
+      "Du kan lage utkast til ukesrapporter, avdelingsrapporter, tiltakslister, sjekklister, opplæringsplaner og lederoppsummeringer.",
+      "Du skal ikke late som du er helsepersonell, lege, sykepleier eller juridisk rådgiver.",
+      "Ikke be om pasientidentifiserbare opplysninger. Hvis brukeren skriver sensitive opplysninger, svar generelt og be dem bruke godkjent journalsystem/lokale rutiner.",
+      "Ved akutt fare, pasientsikkerhet, medisinske spørsmål eller usikkerhet skal du be brukeren følge lokale rutiner og kontakte ansvarlig helsepersonell eller leder.",
+    ].join(" ");
+  }
+
+  function buildCareMessages(question, context, history = []) {
+    const safeHistory = Array.isArray(history)
+      ? history
+          .filter((message) => message && ["user", "assistant"].includes(message.role) && typeof message.content === "string")
+          .slice(-10)
+          .map((message) => ({ role: message.role, content: message.content.slice(0, 4000) }))
+      : [];
+
+    return [
+      { role: "system", content: careAssistantSystemPrompt() },
+      ...safeHistory,
+      {
+        role: "user",
+        content: context ? `Kontekst:\n${context}\n\nSpørsmål:\n${question}` : question,
+      },
+    ];
+  }
+
+  async function callExternalCareAssistant(messages) {
+    const candidates = [
+      process.env.OMSORGPILOT_AI_CHAT_URL,
+      "https://robot.zentro.run/api/public/chat",
+      "https://api.zentro.run/api/public/chat",
+    ].filter(Boolean);
+    const apiKey = (process.env.SH_API_KEY || process.env.OMSORGPILOT_AI_API_KEY || "").trim();
+
+    for (const url of candidates) {
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(apiKey ? { "x-sh-api-key": apiKey } : {}),
+          },
+          body: JSON.stringify({ messages }),
+        });
+
+        if (!response.ok) continue;
+        const body = await response.json();
+        const answer = body.reply || body.answer || body.message;
+        if (answer) return { answer, source: url };
+      } catch {
+        // Try the next configured AI backend.
+      }
+    }
+
+    return null;
+  }
+
   router.use((req, res, next) => {
     const role = req.user?.role;
     if (!role) return res.status(401).json({ error: "Mangler brukerrolle" });
@@ -521,31 +582,26 @@ function buildOmsorgRouter() {
     const model = req.app.get("openai_model") || "gpt-4o-mini";
     const question = String(req.body?.question || "").trim();
     const context = String(req.body?.context || "").trim();
+    const history = Array.isArray(req.body?.messages) ? req.body.messages : [];
 
     if (!question) return res.status(400).json({ error: "Skriv et spørsmål til Care Assistenten" });
-    if (!openai) return res.status(500).json({ error: "AI-tjenesten er ikke konfigurert på serveren" });
+    const messages = buildCareMessages(question, context, history);
+
+    if (!openai) {
+      const external = await callExternalCareAssistant(messages);
+      if (!external) return res.status(500).json({ error: "AI-tjenesten er ikke konfigurert på serveren" });
+      await audit(req, "care_assistant.asked", "care_assistant", null, { question: question.slice(0, 500), source: external.source });
+      return res.json({ ok: true, answer: external.answer, source: external.source });
+    }
 
     const completion = await openai.chat.completions.create({
       model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Du er Care Assistenten i OmsorgPilot for Nordraaks vei sykehjem. " +
-            "Svar alltid på norsk, kortfattet og praktisk. Hjelp med tilsyn, kurs, sjekklister, avvik, dokumentasjon, prosedyrer og lederoversikt. " +
-            "Du skal ikke utgi deg for å være lege, sykepleier eller juridisk rådgiver. " +
-            "Ikke be om eller gjenta sensitive pasientopplysninger. Ved akutt fare, pasientsikkerhet, medisinske spørsmål eller usikkerhet skal du be brukeren følge lokale rutiner og kontakte ansvarlig helsepersonell eller leder.",
-        },
-        {
-          role: "user",
-          content: context ? `Kontekst:\n${context}\n\nSpørsmål:\n${question}` : question,
-        },
-      ],
+      messages,
     });
 
     const answer = completion.choices?.[0]?.message?.content || "Jeg klarte ikke å lage et svar akkurat nå.";
     await audit(req, "care_assistant.asked", "care_assistant", null, { question: question.slice(0, 500) });
-    res.json({ ok: true, answer });
+    res.json({ ok: true, answer, source: "local-openai" });
   });
 
   router.get("/helseverktoy", async (req, res) => {
