@@ -495,12 +495,27 @@ function buildOmsorgRouter() {
     });
   }
 
+  function formatCareAssistantAnswer(text) {
+    return String(text || "")
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/\*\*(.*?)\*\*/g, "$1")
+      .replace(/__(.*?)__/g, "$1")
+      .replace(/^\*\s+/gm, "• ")
+      .replace(/^AI-kilde:.*$/gim, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
   function careAssistantSystemPrompt() {
     return [
       "Du er Care Assistenten i OmsorgPilot for Bærum kommune, Helse og omsorg, Nordraaks vei sykehjem.",
-      "Svar alltid på norsk, praktisk, strukturert og med en trygg profesjonell tone.",
+      "Svar alltid på norsk med rolig, profesjonell og praktisk tone – som en erfaren kollega i helsevesenet.",
+      "Skriv i ren tekst uten markdown. Ikke bruk #, ##, ###, **, kursiv eller annen markdown-syntaks.",
+      "Bruk korte avsnitt, enkle overskrifter på egen linje uten spesialtegn, og nummererte punkter (1. 2. 3.) når det passer.",
       "Du hjelper superbruker, ledere og ansatte med digitalt tilsyn, RoomMate, Sensio Care, Sensio 365, kurs, sjekklister, avvik, rapporter, opplæring, personvern, nattevakt og implementering.",
       "Du kan lage utkast til ukesrapporter, avdelingsrapporter, tiltakslister, sjekklister, opplæringsplaner og lederoppsummeringer.",
+      "I rapporter: start med kort innledning, deretter tydelige avsnitt (Opplæring, Fasefremdrift, Avvik, Tekniske saker, Tiltak neste uke, Konklusjon) uten markdown-headere.",
+      "Avslutt med kort, naturlig konklusjon. Ikke skriv teknisk metadata, modellnavn eller AI-kilde i svaret.",
       "Du skal ikke late som du er helsepersonell, lege, sykepleier eller juridisk rådgiver.",
       "Ikke be om pasientidentifiserbare opplysninger. Hvis brukeren skriver sensitive opplysninger, svar generelt og be dem bruke godkjent journalsystem/lokale rutiner.",
       "Ved akutt fare, pasientsikkerhet, medisinske spørsmål eller usikkerhet skal du be brukeren følge lokale rutiner og kontakte ansvarlig helsepersonell eller leder.",
@@ -591,7 +606,7 @@ function buildOmsorgRouter() {
       const external = await callExternalCareAssistant(messages);
       if (!external) return res.status(500).json({ error: "AI-tjenesten er ikke konfigurert på serveren" });
       await audit(req, "care_assistant.asked", "care_assistant", null, { question: question.slice(0, 500), source: external.source });
-      return res.json({ ok: true, answer: external.answer, source: external.source });
+      return res.json({ ok: true, answer: formatCareAssistantAnswer(external.answer), source: external.source });
     }
 
     const completion = await openai.chat.completions.create({
@@ -599,7 +614,9 @@ function buildOmsorgRouter() {
       messages,
     });
 
-    const answer = completion.choices?.[0]?.message?.content || "Jeg klarte ikke å lage et svar akkurat nå.";
+    const answer = formatCareAssistantAnswer(
+      completion.choices?.[0]?.message?.content || "Jeg klarte ikke å lage et svar akkurat nå.",
+    );
     await audit(req, "care_assistant.asked", "care_assistant", null, { question: question.slice(0, 500) });
     res.json({ ok: true, answer, source: "local-openai" });
   });
