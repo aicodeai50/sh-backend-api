@@ -1,5 +1,11 @@
 const express = require("express");
 const { Op } = require("sequelize");
+let webpush = null;
+try {
+  webpush = require("web-push");
+} catch (_error) {
+  webpush = null;
+}
 const {
   User,
   OmsorgCourse,
@@ -11,9 +17,51 @@ const {
   OmsorgDigitalSupervisionRoom,
   OmsorgDeviation,
   OmsorgImplementationState,
+  OmsorgPushSubscription,
 } = require("../../../database");
 
 const ADMIN_ROLES = ["admin", "superuser", "company_admin", "instructor"];
+
+const PLATFORM_IDEALS = [
+  {
+    title: "Menneskelig verdighet først",
+    description:
+      "Teknologi skal støtte beboere og ansatte, ikke overvåke unødig. Digitalt tilsyn er anonymisert — ikke tradisjonelt kamera.",
+    priAlignment: "zentro.pri: intelligens skal tjene menneskelig verdighet — ikke erstatte den.",
+  },
+  {
+    title: "Ansvarlighet og sporbarhet",
+    description:
+      "Viktige handlinger logges: kryssing, kommentarer, avvik og revisjonsspor. Ledere ser hvem gjorde hva og når.",
+    priAlignment: "zentro.pri: systemer som handler med ansvarlighet og bevarer menneskelig ansvarlighet.",
+  },
+  {
+    title: "Pasientsikkerhet over automatisering",
+    description:
+      "Care Assistenten og AI-støtte erstatter ikke sykepleier, lege eller leder. Ved usikkerhet: lokale rutiner og fagperson.",
+    priAlignment: "zentro.pri Reason: vurdere usikkerhet og alternativer — aldri fjerne fagperson fra beslutningen.",
+  },
+  {
+    title: "Personvern by design",
+    description: "GDPR, samtykke og ROS/DPIA. Ingen pasientnavn på offentlige flater. Rollebasert tilgang for ansatte og ledere.",
+    priAlignment: "zentro.pri Safety & Trust: trygghetssperrer og personvern er innebygd, ikke etterpåklatt.",
+  },
+  {
+    title: "Kompetanse og forankring",
+    description:
+      "Opplæring M1–M6, Sensio LEARN og Qudos/MERkompetanse. Mål: 90 % opplært på tvers av 9 avdelinger.",
+    priAlignment: "zentro.pri Impact: kompetanse og læring gjør intelligens brukbar i praksis.",
+  },
+  {
+    title: "Kontinuerlig forbedring",
+    description:
+      "Fasevis utrulling, ukesstatus mandag kl. 09:00, avvik og rapporter som læringssløyfe — ikke engangsprosjekt.",
+    priAlignment: "zentro.pri: fasevis utrulling og simulering før full deploy — læringssløyfe i drift.",
+  },
+];
+
+const PRI_MANIFESTO_QUOTE =
+  "Vi tror intelligens skal tjene menneskelig verdighet. Vi bygger systemer som vurderer med omsorg, handler med ansvarlighet og skalerer med formål.";
 
 const DEFAULT_HEALTH_TOOLS = [
   {
@@ -305,7 +353,9 @@ function buildOmsorgRouter() {
       checkedAt: checkoff.checked_at,
       note: checkoff.note || null,
       employee: shapeUser(checkoff.employee),
-      course: checkoff.OmsorgCourse ? { id: checkoff.OmsorgCourse.id, title: checkoff.OmsorgCourse.title } : null,
+      course: checkoff.OmsorgCourse
+        ? { id: checkoff.OmsorgCourse.id, title: checkoff.OmsorgCourse.title, department: checkoff.OmsorgCourse.department || null }
+        : null,
       activity: checkoff.OmsorgActivity ? { id: checkoff.OmsorgActivity.id, title: checkoff.OmsorgActivity.title } : null,
     };
   }
@@ -321,7 +371,9 @@ function buildOmsorgRouter() {
       createdAt: comment.created_at,
       employee: shapeUser(comment.employee),
       author: shapeUser(comment.author),
-      course: comment.OmsorgCourse ? { id: comment.OmsorgCourse.id, title: comment.OmsorgCourse.title } : null,
+      course: comment.OmsorgCourse
+        ? { id: comment.OmsorgCourse.id, title: comment.OmsorgCourse.title, department: comment.OmsorgCourse.department || null }
+        : null,
       activity: comment.OmsorgActivity ? { id: comment.OmsorgActivity.id, title: comment.OmsorgActivity.title } : null,
     };
   }
@@ -495,6 +547,498 @@ function buildOmsorgRouter() {
     });
   }
 
+  async function notifyProductFeedback(entry, req) {
+    const webhookUrl = (process.env.FEEDBACK_NOTIFY_WEBHOOK_URL || "").trim();
+    const slackUrl = (process.env.FEEDBACK_SLACK_WEBHOOK_URL || "").trim();
+    const teamsUrl = (process.env.FEEDBACK_TEAMS_WEBHOOK_URL || "").trim();
+    const notifyEmail = (process.env.FEEDBACK_NOTIFY_EMAIL || "").trim();
+    const resendKey = (process.env.RESEND_API_KEY || "").trim();
+    const payload = {
+      type: "product_feedback",
+      site: "Nordraaks vei sykehjem",
+      category: String(entry.category || "annet"),
+      preview: String(entry.body || "").slice(0, 500),
+      authorName: entry.authorName ? String(entry.authorName) : null,
+      authorEmail: entry.authorEmail ? String(entry.authorEmail) : null,
+      adminUrl: "/admin/tilbakemelding",
+      createdAt: entry.createdAt || new Date().toISOString(),
+    };
+
+    const attempts = [];
+
+    if (slackUrl) {
+      try {
+        const response = await fetch(slackUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: `Ny tilbakemelding i OmsorgPilot (${payload.site})`,
+            blocks: [
+              { type: "header", text: { type: "plain_text", text: "Ny tilbakemelding — OmsorgPilot" } },
+              {
+                type: "section",
+                fields: [
+                  { type: "mrkdwn", text: `*Kategori:*\n${payload.category}` },
+                  { type: "mrkdwn", text: `*Fra:*\n${payload.authorName || payload.authorEmail || "Ukjent"}` },
+                ],
+              },
+              { type: "section", text: { type: "mrkdwn", text: `*Melding:*\n${payload.preview}` } },
+            ],
+          }),
+        });
+        attempts.push({ channel: "slack", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "slack", sent: false, error: error.message });
+      }
+    }
+
+    if (teamsUrl) {
+      try {
+        const response = await fetch(teamsUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            summary: "Ny tilbakemelding i OmsorgPilot",
+            themeColor: "0f766e",
+            title: "OmsorgPilot — ny tilbakemelding",
+            text: `**Kategori:** ${payload.category}\n\n**Fra:** ${payload.authorName || payload.authorEmail || "Ukjent"}\n\n${payload.preview}`,
+          }),
+        });
+        attempts.push({ channel: "teams", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "teams", sent: false, error: error.message });
+      }
+    }
+
+    if (webhookUrl) {
+      try {
+        const response = await fetch(webhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, notifyEmail: notifyEmail || null }),
+        });
+        attempts.push({ channel: "webhook", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "webhook", sent: false, error: error.message });
+      }
+    }
+
+    if (notifyEmail && resendKey) {
+      try {
+        const response = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${resendKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from: (process.env.FEEDBACK_NOTIFY_FROM || "OmsorgPilot <onboarding@resend.dev>").trim(),
+            to: notifyEmail.split(",").map((item) => item.trim()).filter(Boolean),
+            subject: `[OmsorgPilot] Ny tilbakemelding: ${payload.category}`,
+            text: `${payload.preview}\n\nFra: ${payload.authorName || payload.authorEmail || "Ukjent"}\nKategori: ${payload.category}\n\nÅpne adminpanelet for å lese mer.`,
+          }),
+        });
+        attempts.push({ channel: "email", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "email", sent: false, error: error.message });
+      }
+    }
+
+    const pushResult = await sendWebPushToLeaders({
+      title: "Ny tilbakemelding i OmsorgPilot",
+      body: `${payload.category}: ${payload.preview.slice(0, 120)}`,
+      url: "/admin/tilbakemelding",
+    });
+    if (pushResult.sent > 0) attempts.push({ channel: "web_push", sent: true, count: pushResult.sent });
+
+    if (attempts.length === 0) {
+      return { attempted: false, sent: false, reason: "not_configured" };
+    }
+
+    const sent = attempts.some((item) => item.sent);
+    return { attempted: true, sent, channels: attempts };
+  }
+
+  async function notifyWeeklyReportDraft(draft, req) {
+    const notifyEmail = (process.env.WEEKLY_REPORT_NOTIFY_EMAIL || process.env.FEEDBACK_NOTIFY_EMAIL || "").trim();
+    const slackUrl = (process.env.WEEKLY_REPORT_SLACK_WEBHOOK_URL || process.env.FEEDBACK_SLACK_WEBHOOK_URL || "").trim();
+    const resendKey = (process.env.RESEND_API_KEY || "").trim();
+    const deptLabel = draft.department ? ` · ${draft.department}` : "";
+    const fullBody = String(draft.body || "");
+    const preview = fullBody.slice(0, 2000);
+    const attachmentName = `ukesrapport-utkast-${(draft.generatedAt || new Date().toISOString()).slice(0, 10)}.txt`;
+    const pdfName = `ukesrapport-utkast-${(draft.generatedAt || new Date().toISOString()).slice(0, 10)}.pdf`;
+    const attachmentContent = Buffer.from(fullBody, "utf-8").toString("base64");
+    const pdfContent = buildSimplePdf(fullBody).toString("base64");
+    const attempts = [];
+
+    if (slackUrl) {
+      try {
+        const response = await fetch(slackUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: `Ukesrapport-utkast klar — Nordraaks vei sykehjem${deptLabel}`,
+            blocks: [
+              { type: "header", text: { type: "plain_text", text: "Ukesrapport-utkast — OmsorgPilot" } },
+              {
+                type: "section",
+                fields: [
+                  { type: "mrkdwn", text: `*Periode:*\n${draft.period || "uke"}` },
+                  { type: "mrkdwn", text: `*Generert:*\n${draft.generatedAt || new Date().toISOString()}` },
+                ],
+              },
+              { type: "section", text: { type: "mrkdwn", text: preview.slice(0, 2800) } },
+              { type: "context", elements: [{ type: "mrkdwn", text: "Åpne /admin/rapporter for full tekst og PDF." }] },
+            ],
+          }),
+        });
+        attempts.push({ channel: "slack", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "slack", sent: false, error: error.message });
+      }
+    }
+
+    if (notifyEmail && resendKey) {
+      try {
+        const response = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${resendKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from: (process.env.WEEKLY_REPORT_NOTIFY_FROM || process.env.FEEDBACK_NOTIFY_FROM || "OmsorgPilot <onboarding@resend.dev>").trim(),
+            to: notifyEmail.split(",").map((item) => item.trim()).filter(Boolean),
+            subject: `[OmsorgPilot] Ukesrapport-utkast${deptLabel}`,
+            text: `${preview}\n\n---\nGenerert: ${draft.generatedAt || new Date().toISOString()}\nPeriode: ${draft.period || "uke"}${deptLabel}\n\nVedlegg: .txt og .pdf (forenklet). Full PDF via Skriv ut i /admin/rapporter.`,
+            attachments: fullBody
+              ? [
+                  { filename: attachmentName, content: attachmentContent },
+                  { filename: pdfName, content: pdfContent },
+                ]
+              : undefined,
+          }),
+        });
+        attempts.push({ channel: "email", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "email", sent: false, error: error.message });
+      }
+    }
+
+    const pushResult = await sendWebPushToLeaders({
+      title: "Ukesrapport-utkast er klart",
+      body: `Periode: ${draft.period || "uke"}${deptLabel}`,
+      url: "/admin/rapporter",
+    });
+    if (pushResult.sent > 0) attempts.push({ channel: "web_push", sent: true, count: pushResult.sent });
+
+    if (attempts.length === 0) {
+      return { attempted: false, sent: false, reason: "not_configured" };
+    }
+
+    const sent = attempts.some((item) => item.sent);
+    return { attempted: true, sent, channels: attempts };
+  }
+
+  const CRITICAL_DEVIATION_SEVERITIES = new Set(["hoy", "kritisk"]);
+
+  function isCriticalOpenDeviation(deviation) {
+    return CRITICAL_DEVIATION_SEVERITIES.has(deviation.severity) && ["apen", "under_behandling"].includes(deviation.status);
+  }
+
+  function escapePdfText(text) {
+    return String(text || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/\(/g, "\\(")
+      .replace(/\)/g, "\\)");
+  }
+
+  function buildSimplePdf(text) {
+    const normalized = String(text || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "?");
+    const lines = normalized.split(/\r?\n/).slice(0, 55);
+    let stream = "BT /F1 10 Tf\n";
+    let y = 780;
+    for (const line of lines) {
+      stream += `1 0 0 1 40 ${y} Tm (${escapePdfText(line.slice(0, 95))}) Tj\n`;
+      y -= 13;
+      if (y < 40) break;
+    }
+    stream += "ET";
+    const streamBytes = Buffer.byteLength(stream, "latin1");
+    const header = `%PDF-1.4
+1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj
+2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj
+3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>endobj
+4 0 obj<< /Length ${streamBytes} >>stream
+${stream}endstream
+endobj
+5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj
+xref
+0 6
+0000000000 65535 f 
+0000000010 00000 n 
+0000000060 00000 n 
+0000000114 00000 n 
+0000000240 00000 n 
+0000000350 00000 n 
+trailer<< /Size 6 /Root 1 0 R >>
+startxref
+430
+%%EOF`;
+    return Buffer.from(header, "latin1");
+  }
+
+  async function notifyCriticalDeviation(deviation, req) {
+    const notifyEmail = (process.env.DEVIATION_CRITICAL_NOTIFY_EMAIL || process.env.FEEDBACK_NOTIFY_EMAIL || "").trim();
+    const slackUrl = (process.env.DEVIATION_CRITICAL_SLACK_WEBHOOK_URL || process.env.FEEDBACK_SLACK_WEBHOOK_URL || "").trim();
+    const teamsUrl = (process.env.DEVIATION_CRITICAL_TEAMS_WEBHOOK_URL || process.env.FEEDBACK_TEAMS_WEBHOOK_URL || "").trim();
+    const resendKey = (process.env.RESEND_API_KEY || "").trim();
+    const payload = {
+      type: "critical_deviation",
+      site: "Nordraaks vei sykehjem",
+      title: String(deviation.title || "Avvik"),
+      severity: String(deviation.severity || "kritisk"),
+      department: String(deviation.department || "Ukjent"),
+      status: String(deviation.status || "apen"),
+      tiltak: String(deviation.tiltak || "").slice(0, 500),
+      adminUrl: "/admin/avvik",
+      id: deviation.id,
+    };
+    const attempts = [];
+
+    if (slackUrl) {
+      try {
+        const response = await fetch(slackUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: `Kritisk avvik — ${payload.title}`,
+            blocks: [
+              { type: "header", text: { type: "plain_text", text: "Kritisk avvik — OmsorgPilot" } },
+              {
+                type: "section",
+                fields: [
+                  { type: "mrkdwn", text: `*Alvorlighet:*\n${payload.severity}` },
+                  { type: "mrkdwn", text: `*Avdeling:*\n${payload.department}` },
+                ],
+              },
+              { type: "section", text: { type: "mrkdwn", text: `*${payload.title}*\n${payload.tiltak}` } },
+            ],
+          }),
+        });
+        attempts.push({ channel: "slack", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "slack", sent: false, error: error.message });
+      }
+    }
+
+    if (teamsUrl) {
+      try {
+        const response = await fetch(teamsUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            summary: "Kritisk avvik i OmsorgPilot",
+            themeColor: "DC2626",
+            title: "OmsorgPilot — kritisk avvik",
+            text: `**${payload.title}**\n\nAlvorlighet: ${payload.severity}\nAvdeling: ${payload.department}\n\n${payload.tiltak}`,
+          }),
+        });
+        attempts.push({ channel: "teams", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "teams", sent: false, error: error.message });
+      }
+    }
+
+    if (notifyEmail && resendKey) {
+      try {
+        const response = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${resendKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from: (process.env.DEVIATION_CRITICAL_NOTIFY_FROM || process.env.FEEDBACK_NOTIFY_FROM || "OmsorgPilot <onboarding@resend.dev>").trim(),
+            to: notifyEmail.split(",").map((item) => item.trim()).filter(Boolean),
+            subject: `[OmsorgPilot] Kritisk avvik: ${payload.title}`,
+            text: `${payload.title}\nAlvorlighet: ${payload.severity}\nAvdeling: ${payload.department}\nStatus: ${payload.status}\n\nTiltak:\n${payload.tiltak}\n\nÅpne /admin/avvik for oppfølging.`,
+          }),
+        });
+        attempts.push({ channel: "email", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "email", sent: false, error: error.message });
+      }
+    }
+
+    const smsResult = await sendCriticalDeviationSms(
+      `OmsorgPilot kritisk avvik: ${payload.title} (${payload.department}, ${payload.severity})`,
+    );
+    if (smsResult.sent) attempts.push({ channel: "sms", sent: true });
+
+    const pushResult = await sendWebPushToLeaders({
+      title: `Kritisk avvik: ${payload.title}`,
+      body: `${payload.department} · ${payload.severity}`,
+      url: "/admin/avvik",
+    });
+    if (pushResult.sent > 0) attempts.push({ channel: "web_push", sent: true, count: pushResult.sent });
+
+    if (attempts.length === 0) {
+      return { attempted: false, sent: false, reason: "not_configured" };
+    }
+
+    const sent = attempts.some((item) => item.sent);
+    return { attempted: true, sent, channels: attempts };
+  }
+
+  function configureWebPush() {
+    const publicKey = (process.env.VAPID_PUBLIC_KEY || "").trim();
+    const privateKey = (process.env.VAPID_PRIVATE_KEY || "").trim();
+    const subject = (process.env.VAPID_SUBJECT || "mailto:admin@baerum.kommune.no").trim();
+    if (!webpush || !publicKey || !privateKey) return false;
+    webpush.setVapidDetails(subject, publicKey, privateKey);
+    return true;
+  }
+
+  async function sendWebPushToLeaders(payload) {
+    if (!configureWebPush()) return { attempted: false, sent: 0 };
+    const leaders = await User.findAll({ where: { role: { [Op.in]: ADMIN_ROLES } }, attributes: ["id"] });
+    const leaderIds = leaders.map((user) => user.id);
+    if (!leaderIds.length) return { attempted: true, sent: 0 };
+
+    const subs = await OmsorgPushSubscription.findAll({ where: { user_id: { [Op.in]: leaderIds } } });
+    const body = JSON.stringify({
+      title: payload.title || "OmsorgPilot",
+      body: payload.body || "",
+      url: payload.url || "/admin",
+    });
+    let sent = 0;
+
+    for (const sub of subs) {
+      try {
+        await webpush.sendNotification(JSON.parse(sub.subscription_json), body);
+        sent += 1;
+      } catch (error) {
+        if (error.statusCode === 404 || error.statusCode === 410) {
+          await sub.destroy();
+        }
+      }
+    }
+
+    return { attempted: true, sent };
+  }
+
+  async function sendCriticalDeviationSms(message) {
+    const sid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
+    const token = (process.env.TWILIO_AUTH_TOKEN || "").trim();
+    const from = (process.env.TWILIO_FROM_NUMBER || "").trim();
+    const to = (process.env.DEVIATION_CRITICAL_SMS_TO || "").trim();
+    if (!sid || !token || !from || !to) return { sent: false, reason: "not_configured" };
+
+    try {
+      const auth = Buffer.from(`${sid}:${token}`).toString("base64");
+      const params = new URLSearchParams({ To: to, From: from, Body: String(message || "").slice(0, 1600) });
+      const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      });
+      return { sent: response.ok, status: response.status };
+    } catch (error) {
+      return { sent: false, error: error.message };
+    }
+  }
+
+  function getWeekStart(date, weeksAgo = 0) {
+    const d = new Date(date);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - weeksAgo * 7);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  async function buildWeeklyTrend(department = "", weeks = 6) {
+    const now = new Date();
+    let activityTotal;
+
+    if (department) {
+      const coursesInDept = await OmsorgCourse.findAll({ where: { department }, attributes: ["id"] });
+      const courseIds = coursesInDept.map((course) => course.id);
+      activityTotal = courseIds.length ? await OmsorgActivity.count({ where: { course_id: { [Op.in]: courseIds } } }) : 0;
+    } else {
+      activityTotal = await OmsorgActivity.count();
+    }
+
+    const trend = [];
+
+    for (let i = weeks - 1; i >= 0; i -= 1) {
+      const weekStart = getWeekStart(now, i);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 7);
+
+      const dateWhere = (field) => ({ [field]: { [Op.gte]: weekStart, [Op.lt]: weekEnd } });
+      const courseInclude = department
+        ? { model: OmsorgCourse, where: { department }, required: true, attributes: [] }
+        : null;
+
+      const checkoffQuery = { where: dateWhere("checked_at") };
+      const commentQuery = { where: dateWhere("created_at") };
+      if (courseInclude) {
+        checkoffQuery.include = [courseInclude];
+        checkoffQuery.distinct = true;
+        commentQuery.include = [courseInclude];
+        commentQuery.distinct = true;
+      }
+
+      const [checkoffs, comments] = await Promise.all([
+        OmsorgCheckoff.count(checkoffQuery),
+        OmsorgComment.count(commentQuery),
+      ]);
+      const completionRate = activityTotal > 0 ? Math.min(100, Math.round((checkoffs / activityTotal) * 100)) : 0;
+
+      trend.push({
+        weekStart: weekStart.toISOString(),
+        label: weekStart.toLocaleDateString("nb-NO", { day: "2-digit", month: "short" }),
+        checkoffs,
+        comments,
+        completionRate,
+      });
+    }
+
+    return trend;
+  }
+
+  async function buildDepartmentStats(departments) {
+    if (!departments.length) return [];
+
+    const stats = await Promise.all(
+      departments.map(async (department) => {
+        const courseInclude = { model: OmsorgCourse, where: { department }, required: true, attributes: [] };
+        const coursesInDept = await OmsorgCourse.findAll({ where: { department }, attributes: ["id"] });
+        const courseIds = coursesInDept.map((course) => course.id);
+        const [checkoffs, comments, activities] = await Promise.all([
+          OmsorgCheckoff.count({ include: [courseInclude], distinct: true }),
+          OmsorgComment.count({ include: [courseInclude], distinct: true }),
+          courseIds.length ? OmsorgActivity.count({ where: { course_id: { [Op.in]: courseIds } } }) : 0,
+        ]);
+        const completionRate = activities > 0 ? Math.round((checkoffs / activities) * 100) : 0;
+        return { department, checkoffs, comments, activities, completionRate };
+      }),
+    );
+
+    return stats.sort((a, b) => a.department.localeCompare(b.department, "nb"));
+  }
+
   function stripAssistantMetadata(text) {
     return String(text || "")
       .replace(/\s*AI[\s-–—‑]*kilde\s*:\s*[^\n]*/gi, "")
@@ -546,8 +1090,9 @@ function buildOmsorgRouter() {
   }
 
   function careAssistantSystemPrompt() {
+    const idealsText = PLATFORM_IDEALS.map((ideal) => `${ideal.title}: ${ideal.description}`).join(" ");
     return [
-      "Du er Care Assistenten i OmsorgPilot for Bærum kommune, Helse og omsorg, Nordraaks vei sykehjem.",
+      "Du er Care Assistenten i Nordraaks OmsorgPlattform (OmsorgPilot × zentro.pri) for Bærum kommune, Helse og omsorg, Nordraaks vei sykehjem.",
       "Svar alltid på norsk med rolig, profesjonell og hjelpsom tone – som en dyktig kollega i helsevesenet.",
       "Skriv klart, presist og naturlig. Bruk korte avsnitt, enkle overskrifter på egen linje uten # eller **, og nummererte punkter (1. 2. 3.) når det passer.",
       "For rapporter, avvik, prosedyrer og fagtekst: ren tekst uten markdown-headere eller fet skrift.",
@@ -559,6 +1104,8 @@ function buildOmsorgRouter() {
       "Du skal ikke late som du er helsepersonell, lege, sykepleier eller juridisk rådgiver.",
       "Ikke be om pasientidentifiserbare opplysninger. Hvis brukeren skriver sensitive opplysninger, svar generelt og be dem bruke godkjent journalsystem/lokale rutiner.",
       "Ved akutt fare, pasientsikkerhet, medisinske spørsmål eller usikkerhet skal du be brukeren følge lokale rutiner og kontakte ansvarlig helsepersonell eller leder.",
+      `Grunnholdning fra zentro.pri manifesto: ${PRI_MANIFESTO_QUOTE}`,
+      `Følg alltid disse felles prinsippene: ${idealsText}`,
     ].join(" ");
   }
 
@@ -582,6 +1129,7 @@ function buildOmsorgRouter() {
 
   async function callExternalCareAssistant(messages) {
     const candidates = [
+      process.env.ZENTRO_PRI_CHAT_URL,
       process.env.OMSORGPILOT_AI_CHAT_URL,
       "https://robot.zentro.run/api/public/chat",
       "https://api.zentro.run/api/public/chat",
@@ -611,6 +1159,27 @@ function buildOmsorgRouter() {
     return null;
   }
 
+  function zentroPriConfig() {
+    return {
+      priUrl: (process.env.ZENTRO_PRI_URL || "https://pri.zentro.run").replace(/\/+$/, ""),
+      chatUrl: (process.env.ZENTRO_PRI_CHAT_URL || process.env.OMSORGPILOT_AI_CHAT_URL || "").replace(/\/+$/, ""),
+      twinUrl: (process.env.ZENTRO_PRI_TWIN_URL || "").replace(/\/+$/, ""),
+    };
+  }
+
+  async function probeService(url, method = "HEAD") {
+    if (!url) return { configured: false, reachable: false };
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const response = await fetch(url, { method, signal: controller.signal });
+      clearTimeout(timeout);
+      return { configured: true, reachable: response.ok || response.status < 500 };
+    } catch {
+      return { configured: true, reachable: false };
+    }
+  }
+
   router.use((req, res, next) => {
     const role = req.user?.role;
     if (!role) return res.status(401).json({ error: "Mangler brukerrolle" });
@@ -630,6 +1199,86 @@ function buildOmsorgRouter() {
 
     const completionRate = activities > 0 ? Math.round((checkoffs / activities) * 100) : 0;
     res.json({ employees, courses, activities, checkoffs, comments, logs, completionRate });
+  });
+
+  router.get("/platform-meta", async (_req, res) => {
+    const pri = zentroPriConfig();
+    const openai = _req.app.get("openai");
+    const [chatStatus, twinStatus] = await Promise.all([
+      probeService(pri.chatUrl || "https://robot.zentro.run/api/public/chat"),
+      probeService(pri.twinUrl),
+    ]);
+
+    res.json({
+      productName: "Nordraaks OmsorgPlattform",
+      poweredBy: "OmsorgPilot × zentro.pri",
+      org: "Bærum kommune · Helse og omsorg",
+      site: "Nordraaks vei sykehjem",
+      version: "3.8.0",
+      manifesto: {
+        headline: "Intelligens som tjener menneskelig verdighet",
+        quote: PRI_MANIFESTO_QUOTE,
+        source: "zentro.pri",
+        url: pri.priUrl,
+      },
+      priCore: {
+        headline: "Anvendt intelligens for helse, læring og trivsel",
+        layers: ["Intelligenslag", "Miljøarkitektur", "Progresjonsmotor"],
+        healthSystems: ["Tidlig oppfølging", "Tilpasset veiledning", "Kontinuerlig støtte", "Avdelingsoversikt"],
+      },
+      ideals: PLATFORM_IDEALS,
+      senseReasonAct: [
+        { step: "Sense", label: "Oppfange", modules: ["digitalt-tilsyn", "aktivitet", "avvik", "kurs"] },
+        { step: "Reason", label: "Vurdere", modules: ["care-assistenten", "implementering-scenario"] },
+        { step: "Act", label: "Handle", modules: ["rapporter", "implementering", "logs"] },
+      ],
+      zentroPri: {
+        url: pri.priUrl,
+        chatUrl: pri.chatUrl || null,
+        twinUrl: pri.twinUrl || null,
+      },
+      services: {
+        database: { configured: true, reachable: true },
+        openai: { configured: Boolean(openai), reachable: Boolean(openai) },
+        chat: chatStatus,
+        twin: twinStatus,
+      },
+    });
+  });
+
+  router.post("/twin-scenario", async (req, res) => {
+    const twinUrl = zentroPriConfig().twinUrl;
+    const scenario = String(req.body?.scenario || req.body?.name || "").trim();
+    const department = String(req.body?.department || "2. etasje").trim();
+
+    if (!twinUrl) {
+      return res.status(501).json({
+        ok: false,
+        stub: true,
+        message:
+          "Zentro PRI twin-scenario er ikke koblet ennå. Sett ZENTRO_PRI_TWIN_URL når API-dokumentasjon er bekreftet.",
+        scenario: scenario || "pilot-stress-test",
+        department,
+        recommendation:
+          "Fortsett med fasevis utrulling i implementeringsmodulen til twin-API er tilgjengelig.",
+      });
+    }
+
+    try {
+      const response = await fetch(twinUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario, department, source: "omsorgpilot" }),
+      });
+      if (!response.ok) {
+        return res.status(502).json({ ok: false, error: "Twin-tjenesten svarte med feil", status: response.status });
+      }
+      const body = await response.json();
+      await audit(req, "twin_scenario.requested", "twin_scenario", null, { scenario, department });
+      return res.json({ ok: true, ...body });
+    } catch (error) {
+      return res.status(502).json({ ok: false, error: "Kunne ikke nå twin-tjenesten", details: error.message });
+    }
   });
 
   router.post("/care-assistenten", async (req, res) => {
@@ -815,12 +1464,24 @@ function buildOmsorgRouter() {
     });
 
     await audit(req, "deviation.created", "deviation", deviation.id, { severity: deviation.severity, status: deviation.status });
+
+    if (isCriticalOpenDeviation(deviation)) {
+      const notifyResult = await notifyCriticalDeviation(deviation, req);
+      await audit(req, notifyResult.sent ? "deviation.critical_notified" : "deviation.critical_notify_failed", "deviation", deviation.id, {
+        sent: notifyResult.sent,
+        reason: notifyResult.reason || null,
+      });
+    }
+
     res.status(201).json(shapeDeviation(deviation));
   });
 
   router.patch("/avvik/:id", async (req, res) => {
     const deviation = await OmsorgDeviation.findByPk(req.params.id);
     if (!deviation) return res.status(404).json({ error: "Avvik ikke funnet" });
+
+    const previousSeverity = deviation.severity;
+    const previousStatus = deviation.status;
 
     await deviation.update({
       title: req.body?.title !== undefined ? String(req.body.title).trim() : deviation.title,
@@ -838,6 +1499,20 @@ function buildOmsorgRouter() {
     });
 
     await audit(req, "deviation.updated", "deviation", deviation.id, { severity: deviation.severity, status: deviation.status });
+
+    const escalated =
+      isCriticalOpenDeviation(deviation) &&
+      (!CRITICAL_DEVIATION_SEVERITIES.has(previousSeverity) ||
+        (previousStatus === "lukket" && deviation.status !== "lukket"));
+    if (escalated) {
+      const notifyResult = await notifyCriticalDeviation(deviation, req);
+      await audit(req, notifyResult.sent ? "deviation.critical_notified" : "deviation.critical_notify_failed", "deviation", deviation.id, {
+        sent: notifyResult.sent,
+        reason: notifyResult.reason || null,
+        escalated: true,
+      });
+    }
+
     res.json(shapeDeviation(deviation));
   });
 
@@ -858,6 +1533,7 @@ function buildOmsorgRouter() {
     }
 
     const record = await getOrCreateImplementationState();
+    const previousState = parseImplementationState(record);
     await record.update({
       state_json: serialized,
       schema_version: 1,
@@ -865,9 +1541,26 @@ function buildOmsorgRouter() {
       updated_at: new Date(),
     });
 
+    const oldFeedback = Array.isArray(previousState.productFeedback) ? previousState.productFeedback : [];
+    const newFeedback = Array.isArray(incomingState.productFeedback) ? incomingState.productFeedback : [];
+    const addedFeedback = newFeedback.filter((entry) => entry?.id && !oldFeedback.some((old) => old.id === entry.id));
+
+    for (const entry of addedFeedback) {
+      await audit(req, "product_feedback.created", "product_feedback", String(entry.id), {
+        category: String(entry.category || "annet"),
+        preview: String(entry.body || "").slice(0, 200),
+        authorName: entry.authorName ? String(entry.authorName) : null,
+      });
+      const notifyResult = await notifyProductFeedback(entry, req);
+      if (notifyResult.attempted) {
+        await audit(req, notifyResult.sent ? "product_feedback.notified" : "product_feedback.notify_failed", "product_feedback", String(entry.id), notifyResult);
+      }
+    }
+
     await audit(req, "implementation.updated", "implementation_state", record.id, {
       trainingEntries: Array.isArray(incomingState.trainingEntries) ? incomingState.trainingEntries.length : 0,
       completedWorkflows: incomingState.workflowDone ? Object.values(incomingState.workflowDone).filter(Boolean).length : 0,
+      newFeedbackCount: addedFeedback.length,
     });
 
     res.json(shapeImplementationState(record));
@@ -875,6 +1568,7 @@ function buildOmsorgRouter() {
 
   router.get("/rapporter", async (req, res) => {
     const period = String(req.query.period || "uke").trim() === "maned" ? "maned" : "uke";
+    const department = String(req.query.department || "").trim();
     const [courses, activities, checkoffs, comments, logs, supervisionRooms, deviations] = await Promise.all([
       OmsorgCourse.count(),
       OmsorgActivity.count(),
@@ -885,17 +1579,33 @@ function buildOmsorgRouter() {
       OmsorgDeviation.findAll(),
     ]);
 
-    const digitalSummary = digitalSummaryFromRows(supervisionRooms);
-    const deviationSummary = deviationSummaryFromRows(deviations);
+    const departments = [
+      ...new Set([
+        ...supervisionRooms.map((room) => room.department).filter(Boolean),
+        ...deviations.map((deviation) => deviation.department).filter(Boolean),
+      ]),
+    ].sort((a, b) => a.localeCompare(b, "nb"));
+
+    const filteredRooms = department ? supervisionRooms.filter((room) => room.department === department) : supervisionRooms;
+    const filteredDeviations = department ? deviations.filter((deviation) => deviation.department === department) : deviations;
+
+    const digitalSummary = digitalSummaryFromRows(filteredRooms);
+    const deviationSummary = deviationSummaryFromRows(filteredDeviations);
 
     const completionRate = activities > 0 ? Math.round((checkoffs / activities) * 100) : 0;
     const generatedAt = new Date().toISOString();
     const periodLabel = period === "maned" ? "måned" : "uke";
+    const departmentLabel = department ? ` · ${department}` : "";
+
+    const [weeklyTrend, departmentStats] = await Promise.all([
+      buildWeeklyTrend(department),
+      department ? Promise.resolve([]) : buildDepartmentStats(departments),
+    ]);
 
     const reports = [
       {
-        id: `rapport-tilsyn-${period}`,
-        title: `Digitalt tilsyn - ${periodLabel}`,
+        id: `rapport-tilsyn-${period}${department ? `-${department}` : ""}`,
+        title: `Digitalt tilsyn - ${periodLabel}${departmentLabel}`,
         period,
         status: digitalSummary.kritisk > 0 || digitalSummary.offline > 0 ? "krever_oppfolging" : "stabil",
         generatedAt,
@@ -912,8 +1622,8 @@ function buildOmsorgRouter() {
         ],
       },
       {
-        id: `rapport-avvik-${period}`,
-        title: `Avvik og forbedring - ${periodLabel}`,
+        id: `rapport-avvik-${period}${department ? `-${department}` : ""}`,
+        title: `Avvik og forbedring - ${periodLabel}${departmentLabel}`,
         period,
         status: deviationSummary.hoy > 0 || deviationSummary.kritisk > 0 ? "krever_oppfolging" : "stabil",
         generatedAt,
@@ -952,6 +1662,8 @@ function buildOmsorgRouter() {
     res.json({
       generatedAt,
       period,
+      departments,
+      filteredDepartment: department || null,
       summary: {
         courses,
         activities,
@@ -962,8 +1674,84 @@ function buildOmsorgRouter() {
         digitalSupervision: digitalSummary,
         deviations: deviationSummary,
       },
+      weeklyTrend,
+      departmentStats,
       data: reports,
     });
+  });
+
+  router.post("/weekly-report/notify", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan sende ukesrapport-varsling" });
+    }
+
+    const body = String(req.body?.body || "").trim();
+    if (!body) return res.status(400).json({ error: "Ukesrapport-tekst (body) er påkrevd" });
+
+    const draft = {
+      body,
+      generatedAt: req.body?.generatedAt || new Date().toISOString(),
+      period: String(req.body?.period || "uke").trim(),
+      department: req.body?.department ? String(req.body.department).trim() : null,
+      auto: Boolean(req.body?.auto),
+    };
+
+    const result = await notifyWeeklyReportDraft(draft, req);
+    await audit(req, result.sent ? "weekly_report.notified" : "weekly_report.notify_failed", "weekly_report", null, {
+      auto: draft.auto,
+      sent: result.sent,
+      reason: result.reason || null,
+    });
+    res.json(result);
+  });
+
+  router.get("/push/vapid-public-key", (_req, res) => {
+    const publicKey = (process.env.VAPID_PUBLIC_KEY || "").trim();
+    if (!publicKey) return res.status(503).json({ error: "Web Push er ikke konfigurert (VAPID_PUBLIC_KEY)" });
+    res.json({ publicKey });
+  });
+
+  router.post("/push/subscribe", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan abonnere på Web Push" });
+    }
+
+    const endpoint = String(req.body?.endpoint || "").trim();
+    if (!endpoint) return res.status(400).json({ error: "Push-abonnement (endpoint) er påkrevd" });
+
+    const subscription = {
+      endpoint,
+      expirationTime: req.body?.expirationTime ?? null,
+      keys: req.body?.keys || {},
+    };
+    const now = new Date();
+    const existing = await OmsorgPushSubscription.findOne({ where: { endpoint } });
+
+    if (existing) {
+      await existing.update({
+        user_id: req.user.id,
+        subscription_json: JSON.stringify(subscription),
+        updated_at: now,
+      });
+    } else {
+      await OmsorgPushSubscription.create({
+        user_id: req.user.id,
+        endpoint,
+        subscription_json: JSON.stringify(subscription),
+        created_at: now,
+        updated_at: now,
+      });
+    }
+
+    await audit(req, "push.subscribed", "push_subscription", endpoint.slice(0, 120), { userId: req.user.id });
+    res.status(201).json({ ok: true });
+  });
+
+  router.delete("/push/subscribe", async (req, res) => {
+    const endpoint = String(req.body?.endpoint || "").trim();
+    if (!endpoint) return res.status(400).json({ error: "endpoint er påkrevd" });
+    await OmsorgPushSubscription.destroy({ where: { endpoint, user_id: req.user?.id || null } });
+    res.json({ ok: true });
   });
 
   router.get("/employees", async (req, res) => {
@@ -1107,20 +1895,21 @@ function buildOmsorgRouter() {
 
   router.get("/checkoffs", async (req, res) => {
     const { page, limit, offset } = pagination(req);
+    const department = String(req.query.department || "").trim();
     const where = { ...dateRangeWhere(req, "checked_at") };
     if (req.query.courseId) where.course_id = String(req.query.courseId);
     if (req.query.activityId) where.activity_id = String(req.query.activityId);
     if (req.query.employeeId) where.employee_id = Number(req.query.employeeId);
+    const courseInclude = {
+      model: OmsorgCourse,
+      ...(department ? { where: { department }, required: true } : {}),
+    };
     const result = await OmsorgCheckoff.findAndCountAll({
       where,
       limit,
       offset,
       order: order(req, "checked_at"),
-      include: [
-        { model: User, as: "employee" },
-        { model: OmsorgCourse },
-        { model: OmsorgActivity },
-      ],
+      include: [{ model: User, as: "employee" }, courseInclude, { model: OmsorgActivity }],
     });
     res.json(paginated(result.rows.map(shapeCheckoff), result.count, page, limit));
   });
@@ -1144,22 +1933,22 @@ function buildOmsorgRouter() {
 
   router.get("/comments", async (req, res) => {
     const { page, limit, offset } = pagination(req);
+    const department = String(req.query.department || "").trim();
     const where = { ...dateRangeWhere(req, "created_at") };
     if (req.query.courseId) where.course_id = String(req.query.courseId);
     if (req.query.activityId) where.activity_id = String(req.query.activityId);
     if (req.query.employeeId) where.employee_id = Number(req.query.employeeId);
     if (req.query.q) where.body = { [Op.like]: `%${String(req.query.q).trim()}%` };
+    const courseInclude = {
+      model: OmsorgCourse,
+      ...(department ? { where: { department }, required: true } : {}),
+    };
     const result = await OmsorgComment.findAndCountAll({
       where,
       limit,
       offset,
       order: order(req, "created_at"),
-      include: [
-        { model: User, as: "employee" },
-        { model: User, as: "author" },
-        { model: OmsorgCourse },
-        { model: OmsorgActivity },
-      ],
+      include: [{ model: User, as: "employee" }, { model: User, as: "author" }, courseInclude, { model: OmsorgActivity }],
     });
     res.json(paginated(result.rows.map(shapeComment), result.count, page, limit));
   });

@@ -294,6 +294,23 @@ const OmsorgImplementationState = sequelize.define(
   }
 );
 
+const OmsorgPushSubscription = sequelize.define(
+  "OmsorgPushSubscription",
+  {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    user_id: { type: DataTypes.INTEGER, allowNull: false },
+    endpoint: { type: DataTypes.TEXT, allowNull: false, unique: true },
+    subscription_json: { type: DataTypes.TEXT, allowNull: false },
+    created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  },
+  {
+    tableName: "omsorg_push_subscriptions",
+    timestamps: false,
+    indexes: [{ fields: ["user_id"] }],
+  }
+);
+
 OmsorgCourse.hasMany(OmsorgActivity, { foreignKey: "course_id" });
 OmsorgActivity.belongsTo(OmsorgCourse, { foreignKey: "course_id" });
 
@@ -303,6 +320,8 @@ OmsorgCheckoff.belongsTo(OmsorgCourse, { foreignKey: "course_id" });
 OmsorgCheckoff.belongsTo(OmsorgActivity, { foreignKey: "activity_id" });
 OmsorgCheckoff.belongsTo(User, { as: "employee", foreignKey: "employee_id" });
 OmsorgCheckoff.belongsTo(User, { as: "checkedBy", foreignKey: "checked_by_user_id" });
+User.hasMany(OmsorgPushSubscription, { foreignKey: "user_id" });
+OmsorgPushSubscription.belongsTo(User, { foreignKey: "user_id" });
 
 OmsorgComment.belongsTo(OmsorgCourse, { foreignKey: "course_id" });
 OmsorgComment.belongsTo(OmsorgActivity, { foreignKey: "activity_id" });
@@ -418,4 +437,5 @@ module.exports = {
   OmsorgDigitalSupervisionRoom,
   OmsorgDeviation,
   OmsorgImplementationState,
+  OmsorgPushSubscription,
 };
