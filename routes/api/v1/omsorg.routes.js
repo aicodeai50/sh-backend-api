@@ -27,41 +27,41 @@ const PLATFORM_IDEALS = [
     title: "Menneskelig verdighet først",
     description:
       "Teknologi skal støtte beboere og ansatte, ikke overvåke unødig. Digitalt tilsyn er anonymisert — ikke tradisjonelt kamera.",
-    priAlignment: "zentro.pri: intelligens skal tjene menneskelig verdighet — ikke erstatte den.",
+    practiceNote: "Fagperson vurderer alltid — teknologi støtter, erstatter ikke.",
   },
   {
     title: "Ansvarlighet og sporbarhet",
     description:
       "Viktige handlinger logges: kryssing, kommentarer, avvik og revisjonsspor. Ledere ser hvem gjorde hva og når.",
-    priAlignment: "zentro.pri: systemer som handler med ansvarlighet og bevarer menneskelig ansvarlighet.",
+    practiceNote: "Alle moduler kobles til revisjonslogg der det er relevant.",
   },
   {
     title: "Pasientsikkerhet over automatisering",
     description:
       "Care Assistenten og AI-støtte erstatter ikke sykepleier, lege eller leder. Ved usikkerhet: lokale rutiner og fagperson.",
-    priAlignment: "zentro.pri Reason: vurdere usikkerhet og alternativer — aldri fjerne fagperson fra beslutningen.",
+    practiceNote: "AI gir forslag og utkast — beslutning tas av ansvarlig rolle.",
   },
   {
     title: "Personvern by design",
     description: "GDPR, samtykke og ROS/DPIA. Ingen pasientnavn på offentlige flater. Rollebasert tilgang for ansatte og ledere.",
-    priAlignment: "zentro.pri Safety & Trust: trygghetssperrer og personvern er innebygd, ikke etterpåklatt.",
+    practiceNote: "Personvern-fane og rutiner finnes i implementeringsmodulen.",
   },
   {
     title: "Kompetanse og forankring",
     description:
       "Opplæring M1–M6, Sensio LEARN og Qudos/MERkompetanse. Mål: 90 % opplært på tvers av 9 avdelinger.",
-    priAlignment: "zentro.pri Impact: kompetanse og læring gjør intelligens brukbar i praksis.",
+    practiceNote: "Opplæringslogg og kurs med kryssing dokumenterer fremdrift.",
   },
   {
     title: "Kontinuerlig forbedring",
     description:
       "Fasevis utrulling, ukesstatus mandag kl. 09:00, avvik og rapporter som læringssløyfe — ikke engangsprosjekt.",
-    priAlignment: "zentro.pri: fasevis utrulling og simulering før full deploy — læringssløyfe i drift.",
+    practiceNote: "Forbedringsplan og tilbakemeldinger kobles til ledelse.",
   },
 ];
 
-const PRI_MANIFESTO_QUOTE =
-  "Vi tror intelligens skal tjene menneskelig verdighet. Vi bygger systemer som vurderer med omsorg, handler med ansvarlighet og skalerer med formål.";
+const PLATFORM_MISSION_QUOTE =
+  "Teknologi skal styrke beboere og ansatte — med tydelig ansvar, sporbarhet og respekt for personvern.";
 
 const DEFAULT_HEALTH_TOOLS = [
   {
@@ -1018,6 +1018,84 @@ startxref
     return trend;
   }
 
+  async function buildQuarterlyTrend(department = "", quarters = 4) {
+    const now = new Date();
+    let activityTotal;
+
+    if (department) {
+      const coursesInDept = await OmsorgCourse.findAll({ where: { department }, attributes: ["id"] });
+      const courseIds = coursesInDept.map((course) => course.id);
+      activityTotal = courseIds.length ? await OmsorgActivity.count({ where: { course_id: { [Op.in]: courseIds } } }) : 0;
+    } else {
+      activityTotal = await OmsorgActivity.count();
+    }
+
+    const trend = [];
+
+    for (let i = quarters - 1; i >= 0; i -= 1) {
+      const ref = new Date(now.getFullYear(), now.getMonth() - i * 3, 1);
+      const quarterStart = new Date(ref.getFullYear(), Math.floor(ref.getMonth() / 3) * 3, 1);
+      const quarterEnd = new Date(quarterStart);
+      quarterEnd.setMonth(quarterStart.getMonth() + 3);
+
+      const dateWhere = (field) => ({ [field]: { [Op.gte]: quarterStart, [Op.lt]: quarterEnd } });
+      const courseInclude = department
+        ? { model: OmsorgCourse, where: { department }, required: true, attributes: [] }
+        : null;
+
+      const checkoffQuery = { where: dateWhere("checked_at") };
+      const commentQuery = { where: dateWhere("created_at") };
+      if (courseInclude) {
+        checkoffQuery.include = [courseInclude];
+        checkoffQuery.distinct = true;
+        commentQuery.include = [courseInclude];
+        commentQuery.distinct = true;
+      }
+
+      const [checkoffs, comments] = await Promise.all([
+        OmsorgCheckoff.count(checkoffQuery),
+        OmsorgComment.count(commentQuery),
+      ]);
+      const completionRate = activityTotal > 0 ? Math.min(100, Math.round((checkoffs / activityTotal) * 100)) : 0;
+      const qNum = Math.floor(quarterStart.getMonth() / 3) + 1;
+
+      trend.push({
+        quarterStart: quarterStart.toISOString(),
+        label: `Q${qNum} ${quarterStart.getFullYear()}`,
+        checkoffs,
+        comments,
+        completionRate,
+        goalMet: completionRate >= 80,
+      });
+    }
+
+    return trend;
+  }
+
+  function buildYearOverYearComparison(quarterlyTrendFull) {
+    if (!Array.isArray(quarterlyTrendFull) || quarterlyTrendFull.length < 2) return null;
+
+    const current = quarterlyTrendFull[quarterlyTrendFull.length - 1];
+    const currentDate = new Date(current.quarterStart);
+    const targetYear = currentDate.getFullYear() - 1;
+    const targetQuarter = Math.floor(currentDate.getMonth() / 3) + 1;
+    const previous = quarterlyTrendFull.find((quarter) => {
+      const date = new Date(quarter.quarterStart);
+      return date.getFullYear() === targetYear && Math.floor(date.getMonth() / 3) + 1 === targetQuarter;
+    });
+
+    if (!previous) return null;
+
+    return {
+      currentLabel: current.label,
+      previousLabel: previous.label,
+      currentRate: current.completionRate,
+      previousRate: previous.completionRate,
+      delta: current.completionRate - previous.completionRate,
+      goalMet: current.goalMet,
+    };
+  }
+
   async function buildDepartmentStats(departments) {
     if (!departments.length) return [];
 
@@ -1092,7 +1170,7 @@ startxref
   function careAssistantSystemPrompt() {
     const idealsText = PLATFORM_IDEALS.map((ideal) => `${ideal.title}: ${ideal.description}`).join(" ");
     return [
-      "Du er Care Assistenten i Nordraaks OmsorgPlattform (OmsorgPilot × zentro.pri) for Bærum kommune, Helse og omsorg, Nordraaks vei sykehjem.",
+      "Du er Care Assistenten i Nordraaks OmsorgPlattform (OmsorgPilot) for Bærum kommune, Helse og omsorg, Nordraaks vei sykehjem.",
       "Svar alltid på norsk med rolig, profesjonell og hjelpsom tone – som en dyktig kollega i helsevesenet.",
       "Skriv klart, presist og naturlig. Bruk korte avsnitt, enkle overskrifter på egen linje uten # eller **, og nummererte punkter (1. 2. 3.) når det passer.",
       "For rapporter, avvik, prosedyrer og fagtekst: ren tekst uten markdown-headere eller fet skrift.",
@@ -1104,7 +1182,7 @@ startxref
       "Du skal ikke late som du er helsepersonell, lege, sykepleier eller juridisk rådgiver.",
       "Ikke be om pasientidentifiserbare opplysninger. Hvis brukeren skriver sensitive opplysninger, svar generelt og be dem bruke godkjent journalsystem/lokale rutiner.",
       "Ved akutt fare, pasientsikkerhet, medisinske spørsmål eller usikkerhet skal du be brukeren følge lokale rutiner og kontakte ansvarlig helsepersonell eller leder.",
-      `Grunnholdning fra zentro.pri manifesto: ${PRI_MANIFESTO_QUOTE}`,
+      `Plattformens grunnholdning: ${PLATFORM_MISSION_QUOTE}`,
       `Følg alltid disse felles prinsippene: ${idealsText}`,
     ].join(" ");
   }
@@ -1202,29 +1280,18 @@ startxref
   });
 
   router.get("/platform-meta", async (_req, res) => {
-    const pri = zentroPriConfig();
     const openai = _req.app.get("openai");
-    const [chatStatus, twinStatus] = await Promise.all([
-      probeService(pri.chatUrl || "https://robot.zentro.run/api/public/chat"),
-      probeService(pri.twinUrl),
-    ]);
 
     res.json({
       productName: "Nordraaks OmsorgPlattform",
-      poweredBy: "OmsorgPilot × zentro.pri",
+      poweredBy: "OmsorgPilot",
       org: "Bærum kommune · Helse og omsorg",
       site: "Nordraaks vei sykehjem",
       version: "3.8.0",
-      manifesto: {
-        headline: "Intelligens som tjener menneskelig verdighet",
-        quote: PRI_MANIFESTO_QUOTE,
-        source: "zentro.pri",
-        url: pri.priUrl,
-      },
-      priCore: {
-        headline: "Anvendt intelligens for helse, læring og trivsel",
-        layers: ["Intelligenslag", "Miljøarkitektur", "Progresjonsmotor"],
-        healthSystems: ["Tidlig oppfølging", "Tilpasset veiledning", "Kontinuerlig støtte", "Avdelingsoversikt"],
+      mission: {
+        headline: "Profesjonell digital arbeidsflate for helse og omsorg",
+        quote: PLATFORM_MISSION_QUOTE,
+        source: "OmsorgPilot",
       },
       ideals: PLATFORM_IDEALS,
       senseReasonAct: [
@@ -1232,16 +1299,9 @@ startxref
         { step: "Reason", label: "Vurdere", modules: ["care-assistenten", "implementering-scenario"] },
         { step: "Act", label: "Handle", modules: ["rapporter", "implementering", "logs"] },
       ],
-      zentroPri: {
-        url: pri.priUrl,
-        chatUrl: pri.chatUrl || null,
-        twinUrl: pri.twinUrl || null,
-      },
       services: {
         database: { configured: true, reachable: true },
         openai: { configured: Boolean(openai), reachable: Boolean(openai) },
-        chat: chatStatus,
-        twin: twinStatus,
       },
     });
   });
@@ -1597,10 +1657,14 @@ startxref
     const periodLabel = period === "maned" ? "måned" : "uke";
     const departmentLabel = department ? ` · ${department}` : "";
 
-    const [weeklyTrend, departmentStats] = await Promise.all([
+    const [weeklyTrend, departmentStats, quarterlyTrendFull] = await Promise.all([
       buildWeeklyTrend(department),
       department ? Promise.resolve([]) : buildDepartmentStats(departments),
+      buildQuarterlyTrend(department, 12),
     ]);
+    const quarterlyTrend = quarterlyTrendFull.slice(-4);
+    const longTermTrend = quarterlyTrendFull;
+    const yearOverYear = buildYearOverYearComparison(quarterlyTrendFull);
 
     const reports = [
       {
@@ -1675,6 +1739,9 @@ startxref
         deviations: deviationSummary,
       },
       weeklyTrend,
+      quarterlyTrend,
+      longTermTrend,
+      yearOverYear,
       departmentStats,
       data: reports,
     });
@@ -1702,6 +1769,74 @@ startxref
       sent: result.sent,
       reason: result.reason || null,
     });
+    res.json(result);
+  });
+
+  async function notifyQuarterlyReviewReminder(payload, req) {
+    const notifyEmail = (process.env.QUARTERLY_REVIEW_NOTIFY_EMAIL || process.env.FEEDBACK_NOTIFY_EMAIL || "").trim();
+    const slackUrl = (process.env.QUARTERLY_REVIEW_SLACK_WEBHOOK_URL || process.env.FEEDBACK_SLACK_WEBHOOK_URL || "").trim();
+    const resendKey = (process.env.RESEND_API_KEY || "").trim();
+    const daysLabel = payload.daysSinceLast != null ? `${payload.daysSinceLast} dager siden sist` : "aldri registrert";
+    const notes = String(payload.notes || "").trim();
+    const attempts = [];
+
+    if (slackUrl) {
+      try {
+        const response = await fetch(slackUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: "Kvartalsgjennomgang anbefales — OmsorgPilot",
+            blocks: [
+              { type: "header", text: { type: "plain_text", text: "Kvartalsgjennomgang — OmsorgPilot" } },
+              { type: "section", text: { type: "mrkdwn", text: `*Status:* ${daysLabel}\n*Notater:* ${notes || "—"}\n\nÅpne /admin/forbedring for sjekkliste.` } },
+            ],
+          }),
+        });
+        attempts.push({ channel: "slack", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "slack", sent: false, error: error.message });
+      }
+    }
+
+    if (notifyEmail && resendKey) {
+      try {
+        const response = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            from: process.env.RESEND_FROM || "OmsorgPilot <onboarding@resend.dev>",
+            to: [notifyEmail],
+            subject: "Kvartalsgjennomgang anbefales — Nordraaks OmsorgPilot",
+            text: `Kvartalsvis gjennomgang av forbedringsplan og tilbakemeldinger anbefales.\n\nStatus: ${daysLabel}\n${notes ? `Notater: ${notes}\n` : ""}\nÅpne OmsorgPilot → Forbedring for sjekkliste.`,
+          }),
+        });
+        attempts.push({ channel: "email", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "email", sent: false, error: error.message });
+      }
+    }
+
+    if (!attempts.length) {
+      return { attempted: false, sent: false, reason: "Ingen varsling konfigurert (QUARTERLY_REVIEW_NOTIFY_EMAIL / SLACK)" };
+    }
+    const sent = attempts.some((item) => item.sent);
+    return { attempted: true, sent, channels: attempts };
+  }
+
+  router.post("/quarterly-review/notify", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan sende kvartals-påminnelse" });
+    }
+
+    const result = await notifyQuarterlyReviewReminder(
+      {
+        notes: req.body?.notes ? String(req.body.notes).trim() : "",
+        daysSinceLast: req.body?.daysSinceLast != null ? Number(req.body.daysSinceLast) : null,
+      },
+      req,
+    );
+    await audit(req, result.sent ? "quarterly_review.notified" : "quarterly_review.notify_failed", "quarterly_review", null, result);
     res.json(result);
   });
 
@@ -1754,9 +1889,36 @@ startxref
     res.json({ ok: true });
   });
 
+  async function buildEmployeeTrainingStats(userId, department = "") {
+    let totalActivities;
+    let completedActivities;
+
+    if (department) {
+      const coursesInDept = await OmsorgCourse.findAll({ where: { department }, attributes: ["id"] });
+      const courseIds = coursesInDept.map((course) => course.id);
+      totalActivities = courseIds.length ? await OmsorgActivity.count({ where: { course_id: { [Op.in]: courseIds } } }) : 0;
+      completedActivities = courseIds.length
+        ? await OmsorgCheckoff.count({ where: { employee_id: userId, course_id: { [Op.in]: courseIds } } })
+        : 0;
+    } else {
+      totalActivities = await OmsorgActivity.count();
+      completedActivities = await OmsorgCheckoff.count({ where: { employee_id: userId } });
+    }
+
+    const trainingCompletionRate =
+      totalActivities > 0 ? Math.min(100, Math.round((completedActivities / totalActivities) * 100)) : 0;
+    return {
+      totalActivities,
+      completedActivities,
+      trainingCompletionRate,
+      trainingGoalMet: trainingCompletionRate >= 90,
+    };
+  }
+
   router.get("/employees", async (req, res) => {
     const { page, limit, offset } = pagination(req);
     const q = String(req.query.q || "").trim();
+    const department = String(req.query.department || "").trim();
     const where = {};
     if (q) {
       where[Op.or] = [
@@ -1769,18 +1931,19 @@ startxref
 
     const result = await User.findAndCountAll({ where, limit, offset, order: order(req, "id") });
     const rows = await Promise.all(
-      result.rows.map(async (user) => ({
-        ...shapeUser(user),
-        courseCount: 0,
-        completedActivities: await OmsorgCheckoff.count({ where: { employee_id: user.id } }),
-        lastActivityAt:
-          (
-            await OmsorgCheckoff.findOne({
-              where: { employee_id: user.id },
-              order: [["checked_at", "DESC"]],
-            })
-          )?.checked_at || null,
-      })),
+      result.rows.map(async (user) => {
+        const training = await buildEmployeeTrainingStats(user.id, department);
+        const lastCheckoff = await OmsorgCheckoff.findOne({
+          where: { employee_id: user.id },
+          order: [["checked_at", "DESC"]],
+        });
+        return {
+          ...shapeUser(user),
+          courseCount: 0,
+          ...training,
+          lastActivityAt: lastCheckoff?.checked_at || null,
+        };
+      }),
     );
 
     res.json(paginated(rows, result.count, page, limit));
@@ -1789,12 +1952,12 @@ startxref
   router.get("/employees/:id", async (req, res) => {
     const user = await User.findByPk(req.params.id);
     if (!user) return res.status(404).json({ error: "Ansatt ikke funnet" });
-    const completedActivities = await OmsorgCheckoff.count({ where: { employee_id: user.id } });
+    const training = await buildEmployeeTrainingStats(user.id);
     const lastCheckoff = await OmsorgCheckoff.findOne({ where: { employee_id: user.id }, order: [["checked_at", "DESC"]] });
     res.json({
       ...shapeUser(user),
       courseCount: 0,
-      completedActivities,
+      ...training,
       lastActivityAt: lastCheckoff?.checked_at || null,
     });
   });
@@ -1915,10 +2078,23 @@ startxref
   });
 
   router.post("/checkoffs", async (req, res) => {
+    const employeeId = Number(req.body?.employeeId || req.user.id);
+    const courseId = String(req.body?.courseId || "");
+    const activityId = String(req.body?.activityId || "");
+
+    const existing = await OmsorgCheckoff.findOne({
+      where: { employee_id: employeeId, activity_id: activityId, course_id: courseId },
+      include: [{ model: User, as: "employee" }, { model: OmsorgCourse }, { model: OmsorgActivity }],
+    });
+
+    if (existing) {
+      return res.json({ ...shapeCheckoff(existing), duplicate: true });
+    }
+
     const checkoff = await OmsorgCheckoff.create({
-      course_id: String(req.body?.courseId || ""),
-      activity_id: String(req.body?.activityId || ""),
-      employee_id: Number(req.body?.employeeId || req.user.id),
+      course_id: courseId,
+      activity_id: activityId,
+      employee_id: employeeId,
       checked_by_user_id: req.user.id,
       checked_at: req.body?.checkedAt ? new Date(req.body.checkedAt) : new Date(),
       note: req.body?.note ? String(req.body.note).trim() : null,
@@ -1928,7 +2104,10 @@ startxref
       activityId: checkoff.activity_id,
       employeeId: checkoff.employee_id,
     });
-    res.status(201).json(shapeCheckoff(checkoff));
+    const shaped = await OmsorgCheckoff.findByPk(checkoff.id, {
+      include: [{ model: User, as: "employee" }, { model: OmsorgCourse }, { model: OmsorgActivity }],
+    });
+    res.status(201).json(shapeCheckoff(shaped));
   });
 
   router.get("/comments", async (req, res) => {
@@ -1954,12 +2133,26 @@ startxref
   });
 
   router.post("/comments", async (req, res) => {
+    const activityId = req.body?.activityId ? String(req.body.activityId) : null;
+    const trimmedBody = String(req.body?.body || "").trim();
+    if (!trimmedBody) return res.status(400).json({ error: "Kommentartekst er påkrevd" });
+
+    const duplicateWhere = {
+      author_user_id: req.user.id,
+      body: trimmedBody,
+      ...(activityId ? { activity_id: activityId } : {}),
+    };
+    const existing = await OmsorgComment.findOne({ where: duplicateWhere, order: [["created_at", "DESC"]] });
+    if (existing) {
+      return res.json({ ...shapeComment(existing), duplicate: true });
+    }
+
     const comment = await OmsorgComment.create({
       course_id: req.body?.courseId ? String(req.body.courseId) : null,
-      activity_id: req.body?.activityId ? String(req.body.activityId) : null,
+      activity_id: activityId,
       employee_id: req.body?.employeeId ? Number(req.body.employeeId) : null,
       author_user_id: req.user.id,
-      body: String(req.body?.body || "").trim(),
+      body: trimmedBody,
       created_at: new Date(),
     });
     await audit(req, "comment.created", "comment", comment.id, { courseId: comment.course_id, activityId: comment.activity_id });
