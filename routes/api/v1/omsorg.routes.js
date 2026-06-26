@@ -2008,6 +2008,94 @@ startxref
     res.json(result);
   });
 
+  async function notifyQuarterlyCombinedReport(payload, req) {
+    const notifyEmail = (process.env.QUARTERLY_COMBINED_NOTIFY_EMAIL || process.env.QUARTERLY_STATS_NOTIFY_EMAIL || process.env.QUARTERLY_REVIEW_NOTIFY_EMAIL || process.env.FEEDBACK_NOTIFY_EMAIL || "").trim();
+    const slackUrl = (process.env.QUARTERLY_COMBINED_SLACK_WEBHOOK_URL || process.env.QUARTERLY_STATS_SLACK_WEBHOOK_URL || process.env.QUARTERLY_REVIEW_SLACK_WEBHOOK_URL || process.env.FEEDBACK_SLACK_WEBHOOK_URL || "").trim();
+    const resendKey = (process.env.RESEND_API_KEY || "").trim();
+    const fullBody = String(payload.body || "");
+    const preview = fullBody.slice(0, 2500);
+    const deptLabel = payload.department ? ` · ${payload.department}` : "";
+    const pdfName = `kvartalsrapport-samlet-${new Date().toISOString().slice(0, 10)}.pdf`;
+    const txtName = `kvartalsrapport-samlet-${new Date().toISOString().slice(0, 10)}.txt`;
+    const attempts = [];
+
+    if (slackUrl) {
+      try {
+        const response = await fetch(slackUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: `Samlet kvartalsrapport${deptLabel}`,
+            blocks: [
+              { type: "header", text: { type: "plain_text", text: "Samlet kvartalsrapport — OmsorgPilot" } },
+              { type: "section", text: { type: "mrkdwn", text: preview.slice(0, 2800) } },
+            ],
+          }),
+        });
+        attempts.push({ channel: "slack", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "slack", sent: false, error: error.message });
+      }
+    }
+
+    if (notifyEmail && resendKey) {
+      try {
+        const response = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            from: (process.env.QUARTERLY_COMBINED_NOTIFY_FROM || process.env.QUARTERLY_STATS_NOTIFY_FROM || process.env.WEEKLY_REPORT_NOTIFY_FROM || process.env.FEEDBACK_NOTIFY_FROM || "OmsorgPilot <onboarding@resend.dev>").trim(),
+            to: notifyEmail.split(",").map((item) => item.trim()).filter(Boolean),
+            subject: `[OmsorgPilot] Samlet kvartalsrapport${deptLabel}`,
+            text: `${preview}\n\n---\nGenerert: ${new Date().toISOString()}${deptLabel}\n\nVedlegg: .txt og forenklet .pdf`,
+            attachments: fullBody
+              ? [
+                  { filename: txtName, content: Buffer.from(fullBody, "utf-8").toString("base64") },
+                  { filename: pdfName, content: buildSimplePdf(fullBody).toString("base64") },
+                ]
+              : undefined,
+          }),
+        });
+        attempts.push({ channel: "email", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "email", sent: false, error: error.message });
+      }
+    }
+
+    if (!attempts.length) {
+      return { attempted: false, sent: false, reason: "not_configured", channels: attempts };
+    }
+
+    const sent = attempts.some((item) => item.sent);
+    return { attempted: true, sent, channels: attempts };
+  }
+
+  router.post("/quarterly-combined/notify", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan sende samlet kvartalsrapport" });
+    }
+
+    const body = String(req.body?.body || "").trim();
+    if (!body) {
+      return res.status(400).json({ error: "body er påkrevd" });
+    }
+
+    const result = await notifyQuarterlyCombinedReport(
+      {
+        body,
+        department: req.body?.department ? String(req.body.department).trim() : null,
+        auto: Boolean(req.body?.auto),
+      },
+      req,
+    );
+    await audit(req, result.sent ? "quarterly_combined.notified" : "quarterly_combined.notify_failed", "quarterly_combined", null, {
+      auto: Boolean(req.body?.auto),
+      sent: result.sent,
+      reason: result.reason || null,
+    });
+    res.json(result);
+  });
+
   router.get("/push/vapid-public-key", (_req, res) => {
     const publicKey = (process.env.VAPID_PUBLIC_KEY || "").trim();
     if (!publicKey) return res.status(503).json({ error: "Web Push er ikke konfigurert (VAPID_PUBLIC_KEY)" });
