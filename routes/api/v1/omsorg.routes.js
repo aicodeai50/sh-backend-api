@@ -2075,6 +2075,32 @@ startxref
 
     if (notifyEmail && resendKey) {
       try {
+        const attachments = fullBody
+          ? [
+              { filename: txtName, content: Buffer.from(fullBody, "utf-8").toString("base64") },
+              { filename: pdfName, content: buildSimplePdf(fullBody).toString("base64") },
+            ]
+          : [];
+
+        const deptAttachments = Array.isArray(payload.departmentAttachments) ? payload.departmentAttachments : [];
+        for (const item of deptAttachments.slice(0, 8)) {
+          const deptName = String(item.department || "avdeling")
+            .replace(/[^\w\s-æøåÆØÅ]/g, "")
+            .trim()
+            .slice(0, 40);
+          const deptBody = String(item.body || "");
+          if (!deptBody) continue;
+          const safeName = deptName || "avdeling";
+          attachments.push({
+            filename: `kvartal-${safeName}.txt`,
+            content: Buffer.from(deptBody, "utf-8").toString("base64"),
+          });
+          attachments.push({
+            filename: `kvartal-${safeName}.pdf`,
+            content: buildSimplePdf(deptBody).toString("base64"),
+          });
+        }
+
         const response = await fetch("https://api.resend.com/emails", {
           method: "POST",
           headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
@@ -2082,13 +2108,8 @@ startxref
             from: (process.env.QUARTERLY_COMBINED_NOTIFY_FROM || process.env.QUARTERLY_STATS_NOTIFY_FROM || process.env.WEEKLY_REPORT_NOTIFY_FROM || process.env.FEEDBACK_NOTIFY_FROM || "OmsorgPilot <onboarding@resend.dev>").trim(),
             to: notifyEmail.split(",").map((item) => item.trim()).filter(Boolean),
             subject: `[OmsorgPilot] Samlet kvartalsrapport${deptLabel}`,
-            text: `${preview}\n\n---\nGenerert: ${new Date().toISOString()}${deptLabel}\n\nVedlegg: .txt og forenklet .pdf`,
-            attachments: fullBody
-              ? [
-                  { filename: txtName, content: Buffer.from(fullBody, "utf-8").toString("base64") },
-                  { filename: pdfName, content: buildSimplePdf(fullBody).toString("base64") },
-                ]
-              : undefined,
+            text: `${preview}\n\n---\nGenerert: ${new Date().toISOString()}${deptLabel}\n\nVedlegg: hovedrapport + ${Math.max(0, deptAttachments.length)} avdeling(er)`,
+            attachments: attachments.length ? attachments : undefined,
           }),
         });
         attempts.push({ channel: "email", sent: response.ok, status: response.status });
@@ -2119,6 +2140,7 @@ startxref
       {
         body,
         department: req.body?.department ? String(req.body.department).trim() : null,
+        departmentAttachments: Array.isArray(req.body?.departmentAttachments) ? req.body.departmentAttachments : [],
         auto: Boolean(req.body?.auto),
       },
       req,
