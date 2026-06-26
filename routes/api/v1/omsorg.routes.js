@@ -123,18 +123,8 @@ const DEFAULT_HEALTH_TOOLS = [
     status: "krever_avtale",
     baerumRelevant: true,
     digitalTilsynRelevant: true,
-    description: "Pleie- og omsorgssystem/EPJ brukt i kommunale helse- og omsorgstjenester.",
-    integrationNotes: "Aktuell for journalføring, avtaler, meldinger og dokumentasjon. Krever leverandøravtale og databehandleravklaring.",
-  },
-  {
-    id: "gerica-lifecare",
-    name: "Gerica / Lifecare",
-    category: "epj",
-    status: "krever_avtale",
-    baerumRelevant: false,
-    digitalTilsynRelevant: true,
-    description: "Kommunalt pleie- og omsorgssystem/EPJ fra Tietoevry.",
-    integrationNotes: "Relevant nasjonalt for kommuner som bruker Gerica/Lifecare. Ikke markert som Bærum-spesifikk her.",
+    description: "Pleie- og omsorgssystem/EPJ brukt i Bærum kommune (Nordraaks vei sykehjem og øvrige enheter).",
+    integrationNotes: "Bærum kommune bruker Visma Omsorg Profil — ikke Gerica. Journalføring skjer her; OmsorgPilot kobler ikke pasientdata direkte.",
   },
   {
     id: "dips-cosdoc",
@@ -1382,7 +1372,7 @@ startxref
     if (digitaltTilsynOnly) where.digital_tilsyn_relevant = true;
 
     const tools = await OmsorgHealthTool.findAll({ where, order: [["category", "ASC"], ["name", "ASC"]] });
-    res.json({ data: tools.map(shapeHealthTool) });
+    res.json({ data: tools.filter((tool) => tool.id !== "gerica-lifecare").map(shapeHealthTool) });
   });
 
   router.post("/helseverktoy", async (req, res) => {
