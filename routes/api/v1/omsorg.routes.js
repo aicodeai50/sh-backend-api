@@ -2153,6 +2153,85 @@ startxref
     res.json(result);
   });
 
+  async function notifyFaqExpiryReview(payload, req) {
+    const notifyEmail = (process.env.FAQ_EXPIRY_NOTIFY_EMAIL || process.env.FEEDBACK_NOTIFY_EMAIL || process.env.QUARTERLY_REVIEW_NOTIFY_EMAIL || "").trim();
+    const slackUrl = (process.env.FAQ_EXPIRY_SLACK_WEBHOOK_URL || process.env.FEEDBACK_SLACK_WEBHOOK_URL || "").trim();
+    const resendKey = (process.env.RESEND_API_KEY || "").trim();
+    const preview = String(payload.body || "").slice(0, 2500);
+    const countLabel = payload.entryCount != null ? `${payload.entryCount} FAQ-poster` : "FAQ-poster";
+    const attempts = [];
+
+    if (slackUrl) {
+      try {
+        const response = await fetch(slackUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: "FAQ krever gjennomgang — OmsorgPilot",
+            blocks: [
+              { type: "header", text: { type: "plain_text", text: "FAQ utløp — OmsorgPilot" } },
+              { type: "section", text: { type: "mrkdwn", text: `*${countLabel}* krever gjennomgang.\n\n${preview.slice(0, 2800)}` } },
+            ],
+          }),
+        });
+        attempts.push({ channel: "slack", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "slack", sent: false, error: error.message });
+      }
+    }
+
+    if (notifyEmail && resendKey) {
+      try {
+        const response = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            from: (process.env.FAQ_EXPIRY_NOTIFY_FROM || process.env.FEEDBACK_NOTIFY_FROM || "OmsorgPilot <onboarding@resend.dev>").trim(),
+            to: notifyEmail.split(",").map((item) => item.trim()).filter(Boolean),
+            subject: `[OmsorgPilot] FAQ krever gjennomgang (${countLabel})`,
+            text: `${preview}\n\n---\nGenerert: ${new Date().toISOString()}\nÅpne /admin/hjelp for å fornye eller fjerne.`,
+          }),
+        });
+        attempts.push({ channel: "email", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "email", sent: false, error: error.message });
+      }
+    }
+
+    if (!attempts.length) {
+      return { attempted: false, sent: false, reason: "not_configured", channels: attempts };
+    }
+
+    const sent = attempts.some((item) => item.sent);
+    return { attempted: true, sent, channels: attempts };
+  }
+
+  router.post("/faq-expiry/notify", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun superbruker/leder kan sende FAQ-påminnelse" });
+    }
+
+    const body = String(req.body?.body || "").trim();
+    if (!body) {
+      return res.status(400).json({ error: "body er påkrevd" });
+    }
+
+    const result = await notifyFaqExpiryReview(
+      {
+        body,
+        entryCount: Number(req.body?.entryCount) || 0,
+        auto: Boolean(req.body?.auto),
+      },
+      req,
+    );
+    await audit(req, result.sent ? "faq_expiry.notified" : "faq_expiry.notify_failed", "faq_expiry", null, {
+      auto: Boolean(req.body?.auto),
+      sent: result.sent,
+      reason: result.reason || null,
+    });
+    res.json(result);
+  });
+
   router.get("/push/vapid-public-key", (_req, res) => {
     const publicKey = (process.env.VAPID_PUBLIC_KEY || "").trim();
     if (!publicKey) return res.status(503).json({ error: "Web Push er ikke konfigurert (VAPID_PUBLIC_KEY)" });
