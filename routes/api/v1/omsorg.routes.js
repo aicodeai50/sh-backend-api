@@ -643,8 +643,63 @@ function buildOmsorgRouter() {
     });
     if (pushResult.sent > 0) attempts.push({ channel: "web_push", sent: true, count: pushResult.sent });
 
+    const ticketResult = await forwardFeedbackToTicketSystems(entry);
+    if (ticketResult.attempted) {
+      attempts.push(...(ticketResult.channels || []));
+    }
+
     if (attempts.length === 0) {
       return { attempted: false, sent: false, reason: "not_configured" };
+    }
+
+    const sent = attempts.some((item) => item.sent);
+    return { attempted: true, sent, channels: attempts };
+  }
+
+  async function forwardFeedbackToTicketSystems(entry) {
+    const jiraUrl = (process.env.FEEDBACK_JIRA_WEBHOOK_URL || "").trim();
+    const serviceNowUrl = (process.env.FEEDBACK_SERVICENOW_WEBHOOK_URL || "").trim();
+    const payload = {
+      source: "OmsorgPilot",
+      id: String(entry.id || ""),
+      category: String(entry.category || "annet"),
+      summary: `[OmsorgPilot] ${String(entry.category || "tilbakemelding")}`,
+      description: String(entry.body || ""),
+      authorName: entry.authorName ? String(entry.authorName) : null,
+      authorEmail: entry.authorEmail ? String(entry.authorEmail) : null,
+      createdAt: entry.createdAt || new Date().toISOString(),
+      adminUrl: "/admin/tilbakemelding",
+    };
+    const attempts = [];
+
+    if (jiraUrl) {
+      try {
+        const response = await fetch(jiraUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, target: "jira" }),
+        });
+        attempts.push({ channel: "jira", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "jira", sent: false, error: error.message });
+      }
+    }
+
+    if (serviceNowUrl) {
+      try {
+        const response = await fetch(serviceNowUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, target: "servicenow" }),
+        });
+        attempts.push({ channel: "servicenow", sent: response.ok, status: response.status });
+      } catch (error) {
+        attempts.push({ channel: "servicenow", sent: false, error: error.message });
+      }
+    }
+
+    if (!attempts.length) {
+      return { attempted: false, sent: false, reason: "not_configured", channels: attempts };
     }
 
     const sent = attempts.some((item) => item.sent);
@@ -869,9 +924,12 @@ startxref
       }
     }
 
-    const smsResult = await sendCriticalDeviationSms(
-      `OmsorgPilot kritisk avvik: ${payload.title} (${payload.department}, ${payload.severity})`,
-    );
+    const smsResult = await notifyDeviationSms({
+      severity: payload.severity,
+      status: payload.status || "apen",
+      title: payload.title,
+      department: payload.department,
+    });
     if (smsResult.sent) attempts.push({ channel: "sms", sent: true });
 
     const pushResult = await sendWebPushToLeaders({
@@ -958,14 +1016,30 @@ startxref
     return sendDeviationSms(message, "DEVIATION_MEDIUM_SMS_TO");
   }
 
+  async function notifyDeviationSms(deviation) {
+    if (!["apen", "under_behandling"].includes(deviation.status)) {
+      return { sent: false, reason: "closed" };
+    }
+    const message = `OmsorgPilot avvik (${deviation.severity}): ${deviation.title} (${deviation.department})`;
+    const allEnabled = (process.env.DEVIATION_ALL_SMS_ENABLED || "").trim() === "true";
+    if (allEnabled) {
+      return sendDeviationSms(message, "DEVIATION_ALL_SMS_TO");
+    }
+    if (CRITICAL_DEVIATION_SEVERITIES.has(deviation.severity)) {
+      return sendCriticalDeviationSms(message);
+    }
+    if (deviation.severity === "middels") {
+      return sendMediumDeviationSms(message);
+    }
+    return { sent: false, reason: "not_configured" };
+  }
+
   function isMediumOpenDeviation(deviation) {
     return deviation.severity === "middels" && ["apen", "under_behandling"].includes(deviation.status);
   }
 
   async function notifyMediumDeviation(deviation, req) {
-    const smsResult = await sendMediumDeviationSms(
-      `OmsorgPilot avvik (middels): ${deviation.title} (${deviation.department})`,
-    );
+    const smsResult = await notifyDeviationSms(deviation);
     if (!smsResult.sent) return { attempted: Boolean(process.env.DEVIATION_MEDIUM_SMS_TO), sent: false, reason: smsResult.reason || "not_configured" };
     await audit(req, "deviation.medium_sms_sent", "deviation", String(deviation.id), { severity: deviation.severity });
     return { attempted: true, sent: true, channels: [{ channel: "sms", sent: true }] };
@@ -1584,6 +1658,11 @@ startxref
           sent: notifyResult.sent,
           reason: notifyResult.reason || null,
         });
+      }
+    } else if ((process.env.DEVIATION_ALL_SMS_ENABLED || "").trim() === "true" && ["apen", "under_behandling"].includes(deviation.status)) {
+      const smsResult = await notifyDeviationSms(deviation);
+      if (smsResult.sent) {
+        await audit(req, "deviation.all_sms_sent", "deviation", deviation.id, { severity: deviation.severity });
       }
     }
 
@@ -2271,6 +2350,66 @@ startxref
       reason: result.reason || null,
     });
     res.json(result);
+  });
+
+  router.get("/feedback/ticket-config", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan se ticket-konfigurasjon" });
+    }
+    res.json({
+      jiraConfigured: Boolean((process.env.FEEDBACK_JIRA_WEBHOOK_URL || "").trim()),
+      serviceNowConfigured: Boolean((process.env.FEEDBACK_SERVICENOW_WEBHOOK_URL || "").trim()),
+    });
+  });
+
+  router.post("/feedback/ticket-forward", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan videresende til sakssystem" });
+    }
+    const entry = {
+      id: String(req.body?.id || "").trim(),
+      category: String(req.body?.category || "annet").trim(),
+      body: String(req.body?.body || "").trim(),
+      authorName: req.body?.authorName ? String(req.body.authorName).trim() : null,
+      authorEmail: req.body?.authorEmail ? String(req.body.authorEmail).trim() : null,
+      createdAt: req.body?.createdAt || new Date().toISOString(),
+    };
+    if (!entry.id || !entry.body) {
+      return res.status(400).json({ error: "id og body er påkrevd" });
+    }
+    const result = await forwardFeedbackToTicketSystems(entry);
+    await audit(req, result.sent ? "feedback.ticket_forwarded" : "feedback.ticket_forward_failed", "product_feedback", entry.id, {
+      sent: result.sent,
+      reason: result.reason || null,
+    });
+    res.json(result);
+  });
+
+  router.post("/quality-export/notify", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan eksportere til kvalitetssystem" });
+    }
+    const webhookUrl = (process.env.QUALITY_SYSTEM_WEBHOOK_URL || "").trim();
+    const body = String(req.body?.body || "").trim();
+    if (!webhookUrl) {
+      return res.json({ attempted: false, sent: false, reason: "not_configured" });
+    }
+    if (!body) {
+      return res.status(400).json({ error: "body er påkrevd" });
+    }
+    try {
+      const response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "OmsorgPilot", type: "quality_export", body, exportedAt: new Date().toISOString() }),
+      });
+      const sent = response.ok;
+      await audit(req, sent ? "quality_export.notified" : "quality_export.notify_failed", "quality_export", null, { sent, status: response.status });
+      res.json({ attempted: true, sent, status: response.status });
+    } catch (error) {
+      await audit(req, "quality_export.notify_failed", "quality_export", null, { error: error.message });
+      res.json({ attempted: true, sent: false, reason: error.message });
+    }
   });
 
   router.get("/integrations/sensio/webhook/config", async (req, res) => {
