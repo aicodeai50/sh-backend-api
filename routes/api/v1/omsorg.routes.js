@@ -926,11 +926,11 @@ startxref
     return { attempted: true, sent };
   }
 
-  async function sendCriticalDeviationSms(message) {
+  async function sendDeviationSms(message, toEnvKey = "DEVIATION_CRITICAL_SMS_TO") {
     const sid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
     const token = (process.env.TWILIO_AUTH_TOKEN || "").trim();
     const from = (process.env.TWILIO_FROM_NUMBER || "").trim();
-    const to = (process.env.DEVIATION_CRITICAL_SMS_TO || "").trim();
+    const to = (process.env[toEnvKey] || "").trim();
     if (!sid || !token || !from || !to) return { sent: false, reason: "not_configured" };
 
     try {
@@ -948,6 +948,27 @@ startxref
     } catch (error) {
       return { sent: false, error: error.message };
     }
+  }
+
+  async function sendCriticalDeviationSms(message) {
+    return sendDeviationSms(message, "DEVIATION_CRITICAL_SMS_TO");
+  }
+
+  async function sendMediumDeviationSms(message) {
+    return sendDeviationSms(message, "DEVIATION_MEDIUM_SMS_TO");
+  }
+
+  function isMediumOpenDeviation(deviation) {
+    return deviation.severity === "middels" && ["apen", "under_behandling"].includes(deviation.status);
+  }
+
+  async function notifyMediumDeviation(deviation, req) {
+    const smsResult = await sendMediumDeviationSms(
+      `OmsorgPilot avvik (middels): ${deviation.title} (${deviation.department})`,
+    );
+    if (!smsResult.sent) return { attempted: Boolean(process.env.DEVIATION_MEDIUM_SMS_TO), sent: false, reason: smsResult.reason || "not_configured" };
+    await audit(req, "deviation.medium_sms_sent", "deviation", String(deviation.id), { severity: deviation.severity });
+    return { attempted: true, sent: true, channels: [{ channel: "sms", sent: true }] };
   }
 
   function getWeekStart(date, weeksAgo = 0) {
@@ -1556,6 +1577,14 @@ startxref
         sent: notifyResult.sent,
         reason: notifyResult.reason || null,
       });
+    } else if (isMediumOpenDeviation(deviation)) {
+      const notifyResult = await notifyMediumDeviation(deviation, req);
+      if (notifyResult.attempted) {
+        await audit(req, notifyResult.sent ? "deviation.medium_notified" : "deviation.medium_notify_failed", "deviation", deviation.id, {
+          sent: notifyResult.sent,
+          reason: notifyResult.reason || null,
+        });
+      }
     }
 
     res.status(201).json(shapeDeviation(deviation));
@@ -1596,6 +1625,18 @@ startxref
         reason: notifyResult.reason || null,
         escalated: true,
       });
+    } else if (
+      isMediumOpenDeviation(deviation) &&
+      (previousSeverity !== "middels" || (previousStatus === "lukket" && deviation.status !== "lukket"))
+    ) {
+      const notifyResult = await notifyMediumDeviation(deviation, req);
+      if (notifyResult.attempted) {
+        await audit(req, notifyResult.sent ? "deviation.medium_notified" : "deviation.medium_notify_failed", "deviation", deviation.id, {
+          sent: notifyResult.sent,
+          reason: notifyResult.reason || null,
+          escalated: true,
+        });
+      }
     }
 
     res.json(shapeDeviation(deviation));
@@ -1685,7 +1726,7 @@ startxref
     const [weeklyTrend, departmentStats, quarterlyTrendFull] = await Promise.all([
       buildWeeklyTrend(department),
       department ? Promise.resolve([]) : buildDepartmentStats(departments),
-      buildQuarterlyTrend(department, 12),
+      buildQuarterlyTrend(department, 20),
     ]);
     const quarterlyTrend = quarterlyTrendFull.slice(-4);
     const longTermTrend = quarterlyTrendFull;
@@ -2230,6 +2271,33 @@ startxref
       reason: result.reason || null,
     });
     res.json(result);
+  });
+
+  router.get("/integrations/sensio/webhook/config", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan se Sensio webhook-konfigurasjon" });
+    }
+
+    const base = (process.env.OMSORG_PUBLIC_API_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+    res.json({
+      webhookUrl: `${base}/api/v1/omsorg/integrations/sensio/webhook`,
+      secretConfigured: Boolean((process.env.SENSIO_WEBHOOK_SECRET || "").trim()),
+    });
+  });
+
+  router.post("/integrations/sensio/webhook", async (req, res) => {
+    const secret = (process.env.SENSIO_WEBHOOK_SECRET || "").trim();
+    const provided = String(req.headers["x-sensio-secret"] || req.headers["x-sensio-webhook-secret"] || "").trim();
+    if (!secret || provided !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const payload = req.body && typeof req.body === "object" ? req.body : {};
+    await audit(req, "sensio.webhook_received", "integration", "sensio", {
+      eventType: payload.eventType || payload.type || payload.event || "unknown",
+      preview: JSON.stringify(payload).slice(0, 500),
+    });
+    res.json({ received: true, at: new Date().toISOString() });
   });
 
   router.get("/push/vapid-public-key", (_req, res) => {
