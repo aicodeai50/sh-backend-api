@@ -2412,6 +2412,102 @@ startxref
     }
   });
 
+  router.get("/integrations/epj/comment-merge/config", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan se EPJ merge-konfigurasjon" });
+    }
+    res.json({
+      webhookConfigured: Boolean((process.env.EPJ_COMMENT_MERGE_WEBHOOK_URL || "").trim()),
+    });
+  });
+
+  router.post("/integrations/epj/comment-merge/notify", async (req, res) => {
+    if (!ADMIN_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: "Kun ledere kan varsle EPJ merge" });
+    }
+    const webhookUrl = (process.env.EPJ_COMMENT_MERGE_WEBHOOK_URL || "").trim();
+    const activityId = String(req.body?.activityId || "").trim();
+    const mergedBody = String(req.body?.mergedBody || "").trim();
+    if (!webhookUrl) {
+      return res.json({ attempted: false, sent: false, reason: "not_configured" });
+    }
+    if (!activityId || !mergedBody) {
+      return res.status(400).json({ error: "activityId og mergedBody er påkrevd" });
+    }
+    try {
+      const response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source: "OmsorgPilot",
+          type: "epj_comment_merge",
+          activityId,
+          courseId: req.body?.courseId ? String(req.body.courseId) : null,
+          mode: req.body?.mode ? String(req.body.mode) : "manual",
+          mergedBody: mergedBody.slice(0, 8000),
+          exportedAt: new Date().toISOString(),
+        }),
+      });
+      const sent = response.ok;
+      await audit(req, sent ? "epj_comment_merge.notified" : "epj_comment_merge.notify_failed", "integration", "visma-profil", {
+        sent,
+        status: response.status,
+        activityId,
+      });
+      res.json({ attempted: true, sent, status: response.status });
+    } catch (error) {
+      await audit(req, "epj_comment_merge.notify_failed", "integration", "visma-profil", { error: error.message, activityId });
+      res.json({ attempted: true, sent: false, reason: error.message });
+    }
+  });
+
+  router.get("/integrations/mer/quiz-export/config", async (req, res) => {
+    const role = req.user?.role;
+    if (!["admin", "superuser"].includes(role)) {
+      return res.status(403).json({ error: "Kun superbruker kan se MER quiz-eksport" });
+    }
+    res.json({
+      webhookConfigured: Boolean((process.env.MER_QUIZ_EXPORT_WEBHOOK_URL || "").trim()),
+    });
+  });
+
+  router.post("/integrations/mer/quiz-export", async (req, res) => {
+    const role = req.user?.role;
+    if (!["admin", "superuser"].includes(role)) {
+      return res.status(403).json({ error: "Kun superbruker kan eksportere MER quiz" });
+    }
+    const webhookUrl = (process.env.MER_QUIZ_EXPORT_WEBHOOK_URL || "").trim();
+    const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+    if (!webhookUrl) {
+      return res.json({ attempted: false, sent: false, reason: "not_configured", entryCount: entries.length });
+    }
+    if (!entries.length) {
+      return res.status(400).json({ error: "entries er påkrevd" });
+    }
+    try {
+      const response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source: "OmsorgPilot",
+          type: "mer_quiz_export",
+          exportedAt: new Date().toISOString(),
+          entries: entries.slice(0, 500),
+        }),
+      });
+      const sent = response.ok;
+      await audit(req, sent ? "mer_quiz_export.notified" : "mer_quiz_export.notify_failed", "integration", "merkompetanse", {
+        sent,
+        status: response.status,
+        entryCount: entries.length,
+      });
+      res.json({ attempted: true, sent, status: response.status, entryCount: entries.length });
+    } catch (error) {
+      await audit(req, "mer_quiz_export.notify_failed", "integration", "merkompetanse", { error: error.message, entryCount: entries.length });
+      res.json({ attempted: true, sent: false, reason: error.message, entryCount: entries.length });
+    }
+  });
+
   router.get("/integrations/sensio/webhook/config", async (req, res) => {
     if (!ADMIN_ROLES.includes(req.user?.role)) {
       return res.status(403).json({ error: "Kun ledere kan se Sensio webhook-konfigurasjon" });
