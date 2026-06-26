@@ -1248,6 +1248,41 @@ startxref
     }
   }
 
+  router.get("/site-overview", async (_req, res) => {
+    try {
+      const [employees, courses, activities, checkoffs, courseRows] = await Promise.all([
+        User.count(),
+        OmsorgCourse.count(),
+        OmsorgActivity.count(),
+        OmsorgCheckoff.count(),
+        OmsorgCourse.findAll({ attributes: ["department"], raw: true }),
+      ]);
+      const departments = [...new Set(courseRows.map((row) => String(row.department || "").trim()).filter(Boolean))];
+      const activeDepartments = departments.length;
+      const completionRate = activities > 0 ? Math.min(100, Math.round((checkoffs / activities) * 100)) : 0;
+      const phaseLabel =
+        activeDepartments >= 9 ? "Fase 3" : activeDepartments >= 6 ? "Fase 2" : activeDepartments >= 3 ? "Fase 1" : "Oppstart";
+
+      res.json({
+        site: "Nordraaks vei sykehjem",
+        org: "Bærum kommune · Helse og omsorg",
+        productName: "Nordraaks OmsorgPlattform",
+        employees,
+        courses,
+        activities,
+        checkoffs,
+        completionRate,
+        activeDepartments,
+        totalDepartments: 9,
+        trainingGoalPercent: 90,
+        phaseLabel,
+        generatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Kunne ikke hente oversikt", details: error.message });
+    }
+  });
+
   router.use((req, res, next) => {
     const role = req.user?.role;
     if (!role) return res.status(401).json({ error: "Mangler brukerrolle" });
