@@ -1378,27 +1378,6 @@ startxref
     }
   });
 
-  router.use((req, res, next) => {
-    const role = req.user?.role;
-    if (!role) return res.status(401).json({ error: "Mangler brukerrolle" });
-    if (!ADMIN_ROLES.includes(role)) return res.status(403).json({ error: "Ingen tilgang" });
-    next();
-  });
-
-  router.get("/dashboard", async (_req, res) => {
-    const [employees, courses, activities, checkoffs, comments, logs] = await Promise.all([
-      User.count(),
-      OmsorgCourse.count(),
-      OmsorgActivity.count(),
-      OmsorgCheckoff.count(),
-      OmsorgComment.count(),
-      OmsorgAuditLog.count(),
-    ]);
-
-    const completionRate = activities > 0 ? Math.round((checkoffs / activities) * 100) : 0;
-    res.json({ employees, courses, activities, checkoffs, comments, logs, completionRate });
-  });
-
   router.get("/platform-meta", async (_req, res) => {
     const openai = _req.app.get("openai");
 
@@ -1424,6 +1403,48 @@ startxref
         openai: { configured: Boolean(openai), reachable: Boolean(openai) },
       },
     });
+  });
+
+  router.post("/integrations/sensio/webhook", async (req, res) => {
+    const secret = (process.env.SENSIO_WEBHOOK_SECRET || "").trim();
+    const provided = String(req.headers["x-sensio-secret"] || req.headers["x-sensio-webhook-secret"] || "").trim();
+    if (!secret || provided !== secret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const payload = req.body && typeof req.body === "object" ? req.body : {};
+    await audit(req, "sensio.webhook_received", "integration", "sensio", {
+      eventType: payload.eventType || payload.type || payload.event || "unknown",
+      preview: JSON.stringify(payload).slice(0, 500),
+    });
+    res.json({ received: true, at: new Date().toISOString() });
+  });
+
+  router.get("/push/vapid-public-key", (_req, res) => {
+    const publicKey = (process.env.VAPID_PUBLIC_KEY || "").trim();
+    if (!publicKey) return res.status(503).json({ error: "Web Push er ikke konfigurert (VAPID_PUBLIC_KEY)" });
+    res.json({ publicKey });
+  });
+
+  router.use((req, res, next) => {
+    const role = req.user?.role;
+    if (!role) return res.status(401).json({ error: "Mangler brukerrolle" });
+    if (!ADMIN_ROLES.includes(role)) return res.status(403).json({ error: "Ingen tilgang" });
+    next();
+  });
+
+  router.get("/dashboard", async (_req, res) => {
+    const [employees, courses, activities, checkoffs, comments, logs] = await Promise.all([
+      User.count(),
+      OmsorgCourse.count(),
+      OmsorgActivity.count(),
+      OmsorgCheckoff.count(),
+      OmsorgComment.count(),
+      OmsorgAuditLog.count(),
+    ]);
+
+    const completionRate = activities > 0 ? Math.round((checkoffs / activities) * 100) : 0;
+    res.json({ employees, courses, activities, checkoffs, comments, logs, completionRate });
   });
 
   router.post("/twin-scenario", async (req, res) => {
@@ -2518,27 +2539,6 @@ startxref
       webhookUrl: `${base}/api/v1/omsorg/integrations/sensio/webhook`,
       secretConfigured: Boolean((process.env.SENSIO_WEBHOOK_SECRET || "").trim()),
     });
-  });
-
-  router.post("/integrations/sensio/webhook", async (req, res) => {
-    const secret = (process.env.SENSIO_WEBHOOK_SECRET || "").trim();
-    const provided = String(req.headers["x-sensio-secret"] || req.headers["x-sensio-webhook-secret"] || "").trim();
-    if (!secret || provided !== secret) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    const payload = req.body && typeof req.body === "object" ? req.body : {};
-    await audit(req, "sensio.webhook_received", "integration", "sensio", {
-      eventType: payload.eventType || payload.type || payload.event || "unknown",
-      preview: JSON.stringify(payload).slice(0, 500),
-    });
-    res.json({ received: true, at: new Date().toISOString() });
-  });
-
-  router.get("/push/vapid-public-key", (_req, res) => {
-    const publicKey = (process.env.VAPID_PUBLIC_KEY || "").trim();
-    if (!publicKey) return res.status(503).json({ error: "Web Push er ikke konfigurert (VAPID_PUBLIC_KEY)" });
-    res.json({ publicKey });
   });
 
   router.post("/push/subscribe", async (req, res) => {

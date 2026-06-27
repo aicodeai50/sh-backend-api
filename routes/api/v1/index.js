@@ -6,7 +6,6 @@ const buildFilesRouter = require("./files.routes");
 const buildSqlRouter = require("./sql.routes");
 const buildOmsorgRouter = require("./omsorg.routes");
 const { optionalUser } = require("../../../middleware/optionalUser");
-const { requireUser } = require("../../../middleware/requireUser");
 
 function omsorgTestUser(req, _res, next) {
   req.user = {
@@ -27,7 +26,7 @@ function buildApiV1Router({ sequelize, buildTag }) {
   router.use("/docs", optionalUser(), buildDocsRouter());
   router.use("/files", buildFilesRouter());
   router.use("/sql", buildSqlRouter({ sequelize }));
-  router.use("/omsorg", requireOmsorgAuth ? requireUser() : omsorgTestUser, buildOmsorgRouter());
+  router.use("/omsorg", requireOmsorgAuth ? optionalUser() : omsorgTestUser, buildOmsorgRouter());
 
   return router;
 }
