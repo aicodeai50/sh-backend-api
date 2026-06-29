@@ -34,8 +34,14 @@ const { requireUser } = require("./middleware/requireUser");
 const companyRoutes = require("./routes/company/company.routes");
 const buildDataRouter = require("./routes/data/data.routes");
 const buildApiV1Router = require("./routes/api/v1");
+const buildMonetizedRouter = require("./routes/platform");
+const buildAdminRouter = require("./routes/platform/admin.routes");
+const buildStripeWebhookRouter = require("./routes/platform/webhook.routes");
 const { optionalUser } = require("./middleware/optionalUser");
 const { getCorsConfig } = require("./config/platform.config");
+const { privateNetworkOnly } = require("./middleware/privateNetwork");
+const { getBillingConfig } = require("./config/billing.config");
+const { isSupabaseConfigured } = require("./services/supabase/client");
 
 // ===============================
 // APP
@@ -71,6 +77,9 @@ if (!OPENAI_API_KEY) console.error("⚠️ OPENAI_API_KEY missing (AI/VM will fa
 // ===============================
 // MIDDLEWARE
 // ===============================
+// Stripe webhook must receive raw body (before express.json)
+app.use("/api/billing/webhook", buildStripeWebhookRouter());
+
 app.use(express.json({ limit: "8mb" }));
 app.use(cookieParser());
 
@@ -92,8 +101,11 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
+// Block public internet when PRIVATE_API_ONLY=true (keep / and /health for Railway)
+app.use(privateNetworkOnly());
+
 // ===============================
-// SH API KEY GUARD
+// SH API KEY GUARD (legacy internal routes)
 // ===============================
 function requireShApiKey(req, res, next) {
   const key = String(req.headers["x-sh-api-key"] || "").trim();
@@ -160,7 +172,15 @@ app.set("openai_model", OPENAI_MODEL);
 // HEALTH + DEBUG
 // ===============================
 app.get("/", (_, res) => res.send("OK"));
-app.get("/health", (_, res) => res.json({ ok: true, build: BUILD_TAG }));
+app.get("/health", (_, res) =>
+  res.json({
+    ok: true,
+    build: BUILD_TAG,
+    monetized_api: isSupabaseConfigured(),
+    billing_enabled: getBillingConfig().enabled,
+    private_api_only: getBillingConfig().privateApiOnly,
+  })
+);
 
 app.get("/debug/routes", (_, res) => {
   const routes = [];
@@ -208,7 +228,14 @@ app.get("/debug/jwt-check", (_, res) =>
 );
 
 // ===============================
-// ROUTES
+// MONETIZED API PLATFORM (Supabase + Stripe)
+// ===============================
+const monetizedRouter = buildMonetizedRouter({ openai, model: OPENAI_MODEL });
+app.use("/api", monetizedRouter);
+app.use("/admin", buildAdminRouter());
+
+// ===============================
+// LEGACY ROUTES (internal SH_API_KEY)
 // ===============================
 
 // ✅ Make /auth consistent: protected by SH key too
