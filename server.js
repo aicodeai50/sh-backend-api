@@ -183,6 +183,9 @@ app.get("/health", (_, res) =>
 );
 
 app.get("/debug/routes", (_, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ error: "Not found" });
+  }
   const routes = [];
   const stack = app._router?.stack || [];
   for (const m of stack) {
@@ -197,6 +200,9 @@ app.get("/debug/routes", (_, res) => {
 });
 
 app.get("/debug/sh-api-key-check", (_, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ error: "Not found" });
+  }
   const k = process.env.SH_API_KEY || "";
   res.json({
     exists: Boolean(k),
@@ -209,6 +215,9 @@ app.get("/debug/sh-api-key-check", (_, res) => {
 });
 
 app.get("/debug/openai-key-check", (_, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ error: "Not found" });
+  }
   const k = (process.env.OPENAI_API_KEY || "").trim();
   res.json({
     exists: Boolean(k),
@@ -218,14 +227,17 @@ app.get("/debug/openai-key-check", (_, res) => {
   });
 });
 
-app.get("/debug/jwt-check", (_, res) =>
+app.get("/debug/jwt-check", (_, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ error: "Not found" });
+  }
   res.json({
     hasJwtSecret: Boolean(JWT_SECRET),
     jwtLength: JWT_SECRET.length,
     expiresIn: JWT_EXPIRES_IN,
     build: BUILD_TAG,
-  })
-);
+  });
+});
 
 // ===============================
 // MONETIZED API PLATFORM (Supabase + Stripe)

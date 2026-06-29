@@ -9,6 +9,15 @@ Railway Dashboard → **sh-backend-prod** → **sh-backend-api** → **Settings*
 
 ## 2. Set environment variables
 
+**Never commit secrets to GitHub.** Use local `.env` (gitignored) and sync to Railway:
+
+```powershell
+# From sh-backend-api folder — reads .env locally, pushes to Railway only
+node scripts/sync-railway-env.js
+```
+
+Or set individually in Railway Dashboard → Variables (not in git):
+
 ```powershell
 railway variable set PRIVATE_API_ONLY=true --service sh-backend-api
 railway variable set SUPABASE_URL=https://YOUR_PROJECT.supabase.co --service sh-backend-api

@@ -11,7 +11,24 @@ const KEYS = [
   "OPENAI_MODEL",
   "FRONTEND_ORIGIN",
   "COOKIE_NAME",
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "STRIPE_SECRET_KEY",
+  "STRIPE_PUBLISHABLE_KEY",
+  "STRIPE_WEBHOOK_SECRET",
+  "ADMIN_USER_IDS",
 ];
+
+/** Non-secret platform toggles (safe defaults; never commit real secrets) */
+const RAILWAY_BILLING_DEFAULTS = {
+  ENABLE_BILLING: "true",
+  SH_COST_PER_TOKEN: "0.0001",
+  SH_COST_PER_REQUEST: "0.001",
+  SIGNUP_BONUS_BALANCE: "10",
+  PRIVATE_API_ONLY: "true",
+  ENABLE_LEGACY_SH_KEY: "true",
+  BILLING_CURRENCY: "usd",
+};
 
 /** Railway service references (set once per project; not read from local .env) */
 const RAILWAY_PLATFORM_VARS = {
@@ -93,4 +110,9 @@ for (const [key, value] of Object.entries(RAILWAY_PLATFORM_VARS)) {
   count++;
 }
 
-console.log(`Synced ${count} variables to Railway.`);
+for (const [key, value] of Object.entries(RAILWAY_BILLING_DEFAULTS)) {
+  setVar(key, value);
+  count++;
+}
+
+console.log(`Synced ${count} variables to Railway (secrets read from local .env only, never committed).`);
